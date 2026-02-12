@@ -65,6 +65,17 @@ Least amount of code:
     - Worker is the only place with LLM/tool logic
   - Everything else is Supabase-managed (DB, storage, cron, logs).
 
+### Confirmed decisions (what we’re building)
+- Async: Telegram webhook only ingests + enqueues; worker processes jobs.
+- Always-on (like): Event-driven for chat + cron for scheduled tasks + minimal “heartbeat” (only checks for due jobs, no “think loop”).
+- Sessions: 1 Telegram chat = 1 session (groups = multiple sessions), but only your Telegram user ID is allowed.
+- No commands in Telegram (yet).
+- Single-user: no owner_id, no multi-tenant/RLS complexity.
+- Storage layout: canonical workspace/.agents/** tree in Supabase Storage.
+- .agents folder with sub folders: agents, tools, skills, workflows; with subfolders of slugs matching the resource slug ;and root files: AGENTS.md, SOUL.md etc
+- Memory: DB tables + pgvector + full-text + hybrid search from day one. Based on this post: https://supabase.com/docs/guides/ai/hybrid-search 
+- File access: only within an allowed prefix (default /workspace).
+
 #### Components
 - **Postgres (source of truth)**
   - `sessions`: one per conversation surface (Telegram chat)

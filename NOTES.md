@@ -68,15 +68,3 @@ Super wings also has a marketplace in plug-in and extension ecosystem, let's exp
 The same agent end point that gets Vogt by the heartbeat or messages from the message. Provider gateway should be also available to be involved by external triggers for example from other apps so that no tokens get wasted because of a heartbeat agent invocation, or the agent has to look up what is pending and needs to be done just to explore troika external lives and then trigger them as the agent which is something that can be easily created an automated with traditional code to be more efficient and more reliable and more immediate
 
 Ther ecould be a Trigger based strategy to avoid wasted heartbeat thinking tokens tokens to decide on whats due: Model “work” as explicit jobs in DB; cron just runs due jobs. External apps create jobs via a simple authenticated HTTP endpoint. An additional approach could be a "tasks" table where agents triggered by events or the user can post tasks, which a heartbeat cron can query and if existing records, pick up a task an only then send to the AI, not the AI alwys automatically having to decide if there is a task pending. But external events triggering jobs can drastically reduce the heartbeat work for most use cases.
-
-
-### Confirmed decisions (what we’re building)
-- Async: Telegram webhook only ingests + enqueues; worker processes jobs.
-- Always-on (like): Event-driven for chat + cron for scheduled tasks + minimal “heartbeat” (only checks for due jobs, no “think loop”).
-- Sessions: 1 Telegram chat = 1 session (groups = multiple sessions), but only your Telegram user ID is allowed.
-- No commands in Telegram (yet).
-- Single-user: no owner_id, no multi-tenant/RLS complexity.
-- Storage layout: canonical workspace/.agents/** tree in Supabase Storage.
-- .agents folder with sub folders: agents, tools, skills, workflows; with subfolders of slugs matching the resource slug ;and root files: AGENTS.md, SOUL.md etc
-- Memory: DB tables + pgvector + full-text + hybrid search from day one. Based on this post: https://supabase.com/docs/guides/ai/hybrid-search 
-- File access: only within an allowed prefix (default /workspace).
