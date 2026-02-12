@@ -66,3 +66,16 @@ Let's have a look at the super bass, admin, dashboard, built-in assistant, chat 
 Super wings also has a marketplace in plug-in and extension ecosystem, let's explore future possibilities or necessary things for this set up 
 
 The same agent end point that gets Vogt by the heartbeat or messages from the message. Provider gateway should be also available to be involved by external triggers for example from other apps so that no tokens get wasted because of a heartbeat agent invocation, or the agent has to look up what is pending and needs to be done just to explore troika external lives and then trigger them as the agent which is something that can be easily created an automated with traditional code to be more efficient and more reliable and more immediate
+
+
+1) 
+- yes async: webhook only ingests + enqueues; a worker processes jobs
+- always on like: Event-driven for chat, cron for scheduled tasks, “heartbeat” minimal and mostly for “due jobs exist?” rather than “think every N minutes”.
+- 1 Telegram chat = 1 session. Multiple sessions through groups, 
+- through Telegram only me can text the bot. (Block other accoutns for security)
+- no telegram commands for now, nice to have for later
+- no owner_id needed, really. No future other users
+- canonical ".agents" folder in supabase storage with sub folders: agents, tools, skills, workflows; with subfolders of slugs matching the resource slug ;and root files: AGENTS.md, SOUL.md etc
+- no MEMORY.md like OpenClaw as file, but db record approach with table "memory" for Conversation summary memory + “pinned facts” table and pgvector embeddings and hybrid search with fulltext from day one, based on this post: https://supabase.com/docs/guides/ai/hybrid-search 
+- Agent can access only Supabase Storage paths  placed under an “allowed prefix”, not arbitrary buckets/objects. By default the  /workspace folder
+- Trigger strategy to avoid wasted tokens: Model “work” as explicit jobs in DB; cron just runs due jobs. External apps create jobs via a simple authenticated HTTP endpoint. An additional approach could be a "tasks" table where agents triggered by events or the user can post tasks, which a heartbeat cron can query and if existing records, pick up a task an only then send to the AI, not the AI alwys automatically having to decide if there is a task pending. But external events triggering jobs can drastically reduce the heartbeat work for most use cases.
