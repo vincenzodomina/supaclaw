@@ -70,6 +70,7 @@ Imagine an AI agent that you can setup with one command in the cloud in under 10
 - **No SQLite** — PostgreSQL only
 - **No custom daemon process** — supabase managed state and schedules, no extra deployment or process
 - **No terminal required for daily use** — manage via UI/chat
+- Only SQL (schema, functions) and Typescript (in edge functions), eventually bash scripts for helpers and deployment
 
 ### User Experience Constraints
 
