@@ -77,6 +77,26 @@ curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" 
 
 Docs: [`setWebhook`](https://core.telegram.org/bots/api#setwebhook)
 
+### Local development with Docker + ngrok
+
+Telegram requires a public HTTPS URL for webhooks. If you run Supabase locally in Docker, expose your local Supabase API (`http://127.0.0.1:54321`) via a tunnel and set the webhook URL to that tunnel.
+
+Use the helper script:
+
+```bash
+./scripts/set-local-telegram-webhook.sh
+```
+
+The script will:
+- load `supabase/.env.local`
+- start `ngrok` for port `54321` (if needed)
+- call Telegram `setWebhook` with `TELEGRAM_WEBHOOK_SECRET`
+- verify with `getWebhookInfo`
+
+Requirements:
+- `ngrok` installed and authenticated (`ngrok config add-authtoken <token>`)
+- local Supabase running (`supabase start`)
+
 ## Step 7: Schedule the Worker (Cron)
 
 The worker only calls the LLM when there are due jobs, so this acts as a minimal “heartbeat”.
@@ -121,13 +141,15 @@ Docs:
 - ✅ Supabase integration (schema + jobs)
 - ✅ Telegram webhook + worker
 - ✅ Memory tables + hybrid search (FTS + pgvector)
+- ✅ Tools (read/write/list/edit)
+- ✅ Skills
 
 ### Planned (v0.2.0)
 - [ ] Slack channel
 - [ ] WhatsApp channel
 - [ ] Web chat UI
-- [ ] Tools (read/write/web)
-- [ ] More tools (calendar, email, etc.)
+- [ ] Tools (web/task/search)
+- [ ] Connectors (calendar, email, etc.)
 
 ## Support
 
