@@ -1,0 +1,4 @@
+/.branches
+/.temp
+/.env*
+!.env.example

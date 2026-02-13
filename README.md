@@ -51,10 +51,10 @@ supabase start
 
 1. In Supabase dashboard, go to **SQL Editor**
 2. Click "New Query"
-3. Copy contents of `supabase/migrations/001_initial_schema.sql`
+3. Copy contents of `supabase/schemas/01_schema.sql`
 4. Paste and click "Run"
 
-### Using locally via CLI
+### Using Supabase CLI locally
 
 ```bash
 cd supaclaw
@@ -65,9 +65,100 @@ supabase db push --local
 
 ## Step 3: Create Storage Buckets
 
+Create a **private** bucket named `workspace`.
+
+Inside that bucket, SupaClaw expects:
+
+```text
+.agents/AGENTS.md
+.agents/SOUL.md
+.agents/agents/<slug>/**
+.agents/tools/<slug>/**
+.agents/skills/<slug>/**
+.agents/workflows/<slug>/**
+```
+
 ## Step 4: Configure Environment
 
-## Step 5: Configure Channels
+Copy the template and fill in values:
+
+```bash
+cp supabase/.env.example supabase/.env.local
+```
+
+At minimum, set:
+
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_WEBHOOK_SECRET`
+- `TELEGRAM_ALLOWED_USER_ID` (required; webhook fails closed if missing)
+- `WORKER_SECRET`
+- `TRIGGER_WEBHOOK_SECRET` (required if you want to use `trigger-webhook`)
+- One LLM provider:
+  - `OPENAI_API_KEY` (and optionally `OPENAI_MODEL`)
+  - OR `ANTHROPIC_API_KEY` (and optionally `ANTHROPIC_MODEL`)
+
+## Step 5: Deploy Edge Functions
+
+Deploy functions and set secrets:
+
+```bash
+supabase secrets set --env-file ./supabase/.env.local
+supabase functions deploy --no-verify-jwt telegram-webhook
+supabase functions deploy --no-verify-jwt agent-worker
+supabase functions deploy --no-verify-jwt trigger-webhook
+```
+
+## Step 6: Configure Telegram Webhook
+
+Set Telegram webhook with a secret token (Telegram will send the header `X-Telegram-Bot-Api-Secret-Token` on every request):
+
+```bash
+curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"url\": \"${SUPABASE_URL}/functions/v1/telegram-webhook\",
+    \"secret_token\": \"${TELEGRAM_WEBHOOK_SECRET}\"
+  }"
+```
+
+Docs: [`setWebhook`](https://core.telegram.org/bots/api#setwebhook)
+
+## Step 7: Schedule the Worker (Cron)
+
+The worker only calls the LLM when there are due jobs, so this acts as a minimal “heartbeat”.
+
+In Supabase Dashboard → SQL Editor, run (adapted from Supabase docs):
+
+```sql
+-- Store secrets (Vault)
+select vault.create_secret('https://<project-ref>.supabase.co', 'project_url');
+select vault.create_secret('<WORKER_SECRET>', 'worker_secret');
+
+-- Schedule worker every minute
+select cron.schedule(
+  'supaclaw-agent-worker',
+  '* * * * *',
+  $$
+  select extensions.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name='project_url')
+           || '/functions/v1/agent-worker',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'x-worker-secret', (select decrypted_secret from vault.decrypted_secrets where name='worker_secret')
+    ),
+    body := '{}'::jsonb
+  );
+  $$
+);
+```
+
+Docs:
+- [Scheduling Edge Functions](https://supabase.com/docs/guides/functions/schedule-functions)
+- [Cron](https://supabase.com/docs/guides/cron)
+- [pg_net](https://supabase.com/docs/guides/database/extensions/pg_net)
+- [Vault](https://supabase.com/docs/guides/database/vault)
 
 **That's it.** No daemon setup, no complex config, no VPS, no security headaches.
 
@@ -75,16 +166,15 @@ supabase db push --local
 
 ### Current (v0.1.0)
 - ✅ Core architecture
-- ✅ Supabase integration
-- ✅ Basic tools (read/write/web)
-- ✅ Telegram channel
-- ✅ Deployment configs
+- ✅ Supabase integration (schema + jobs)
+- ✅ Telegram webhook + worker
+- ✅ Memory tables + hybrid search (FTS + pgvector)
 
 ### Planned (v0.2.0)
 - [ ] Slack channel
 - [ ] WhatsApp channel
 - [ ] Web chat UI
-- [ ] Memory improvements (semantic search)
+- [ ] Tools (read/write/web)
 - [ ] More tools (calendar, email, etc.)
 
 ## Support
