@@ -1,5 +1,3 @@
-import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
-
 import { createServiceClient } from '../_shared/supabase.ts'
 import { mustGetEnv } from '../_shared/env.ts'
 import { jsonResponse, textResponse } from '../_shared/http.ts'
@@ -12,6 +10,17 @@ type JobRow = {
   id: number
   type: string
   payload: Record<string, unknown>
+}
+
+type MemoryCandidate = {
+  type: 'pinned_fact' | 'summary'
+  content: string
+  session_id: string | null
+}
+
+type RecentMessage = {
+  role: 'system' | 'user' | 'assistant'
+  content: string
 }
 
 const supabase = createServiceClient()
@@ -106,9 +115,9 @@ async function processProcessMessage(job: JobRow) {
   })
   if (memErr) throw new Error(`hybrid_search_memories failed: ${memErr.message}`)
 
-  const pinnedFacts: any[] = []
-  const summaries: any[] = []
-  for (const memory of memoryCandidates ?? []) {
+  const pinnedFacts: MemoryCandidate[] = []
+  const summaries: MemoryCandidate[] = []
+  for (const memory of (memoryCandidates ?? []) as MemoryCandidate[]) {
     if (memory.type === 'pinned_fact' && pinnedFacts.length < 5) {
       pinnedFacts.push(memory)
       continue
@@ -119,7 +128,7 @@ async function processProcessMessage(job: JobRow) {
     if (pinnedFacts.length >= 5 && summaries.length >= 5) break
   }
 
-  const memoryStrings = [...(pinnedFacts ?? []), ...(summaries ?? [])].map((m: any) => `[${m.type}] ${m.content}`) as string[]
+  const memoryStrings = [...pinnedFacts, ...summaries].map((m) => `[${m.type}] ${m.content}`)
 
   const system = buildSystemPrompt({ soul: soul ?? undefined, memories: memoryStrings })
 
@@ -135,7 +144,7 @@ async function processProcessMessage(job: JobRow) {
 
   const messages: ChatMessage[] = [
     { role: 'system', content: system },
-    ...((recent ?? []).reverse()).map((m: any) => ({ role: m.role, content: m.content })),
+    ...(recent ?? []).reverse().map((m: RecentMessage) => ({ role: m.role, content: m.content })),
   ]
 
   const reply = await generateAssistantReply({ messages })
@@ -166,7 +175,7 @@ async function processProcessMessage(job: JobRow) {
   if (deliveredErr) throw new Error(`Failed to mark assistant message as delivered: ${deliveredErr.message}`)
 }
 
-async function processTrigger(job: JobRow) {
+function processTrigger(job: JobRow) {
   // Trigger jobs are intentionally accepted as no-op for now.
   // This keeps trigger-webhook usable without creating retry noise.
   void job
@@ -211,7 +220,7 @@ async function processJob(job: JobRow) {
   if (job.type === 'process_message') return await processProcessMessage(job)
   const embedConfig = EMBED_CONFIG[job.type]
   if (embedConfig) return await processEmbed(job, embedConfig)
-  if (job.type === 'trigger') return await processTrigger(job)
+  if (job.type === 'trigger') return processTrigger(job)
   throw new Error(`Unknown job type: ${job.type}`)
 }
 

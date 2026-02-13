@@ -1,4 +1,4 @@
-import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
+import { Supabase } from '@supabase/functions-js/edge-runtime.d.ts'
 
 export const EMBEDDING_DIMENSIONS = 384
 

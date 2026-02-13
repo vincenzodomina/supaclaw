@@ -1,5 +1,3 @@
-import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
-
 import { createServiceClient } from '../_shared/supabase.ts'
 import { mustGetEnv } from '../_shared/env.ts'
 import { jsonResponse, textResponse } from '../_shared/http.ts'

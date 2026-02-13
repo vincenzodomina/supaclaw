@@ -5,7 +5,7 @@ const BASE_BACKOFF_MS = 500
 const MAX_BACKOFF_MS = 8000
 
 function sleep(ms: number) {
- new Promise((resolve) => setTimeout(resolve, ms))
+  return new Promise<void>((resolve) => setTimeout(resolve, ms))
 }
 
 function parseRetryAfterMs(value: string | null): number | null {
@@ -36,7 +36,7 @@ export async function telegramSendMessage(params: { chatId: number; text: string
       res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: payload })
     } catch (error) {
       if (attempt >= MAX_RETRIES) {
-        throw new Error(`Provider sendMessage network failure after ${MAX_RETRIES} attempts: ${error?.message || String(error)}`)
+        throw new Error(`Provider sendMessage network failure after ${MAX_RETRIES} attempts: ${error instanceof Error ? error.message : String(error)}`)
       }
       await sleep(getBackoffMs(attempt))
       continue
