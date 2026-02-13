@@ -22,7 +22,7 @@ function getBackoffMs(attempt: number): number {
   return exponential + jitter
 }
 
-export async function telegramSendMessage(params: { chatId: number; text: string }) {
+export async function telegramSendMessage(params: { chatId: string; text: string }) {
   const token = mustGetEnv('TELEGRAM_BOT_TOKEN')
   const url = `https://api.telegram.org/bot${token}/sendMessage`
   const payload = JSON.stringify({

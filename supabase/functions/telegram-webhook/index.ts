@@ -3,15 +3,15 @@ import { mustGetEnv } from '../_shared/env.ts'
 import { jsonResponse, textResponse } from '../_shared/http.ts'
 
 type TelegramUpdate = {
-  update_id: number
+  update_id: number | string
   message?: TelegramMessage
   edited_message?: TelegramMessage
 }
 
 type TelegramMessage = {
-  message_id: number
-  from?: { id: number }
-  chat: { id: number; type: string }
+  message_id: number | string
+  from?: { id: number | string }
+  chat: { id: number | string; type: string }
   text?: string
   // Attachments (we don't process them yet, but we persist raw update)
   document?: unknown
@@ -25,12 +25,9 @@ function verifyTelegramSecret(req: Request) {
 }
 
 function isAllowedUser(message: TelegramMessage): boolean {
-  const rawAllowedId = mustGetEnv('TELEGRAM_ALLOWED_USER_ID')
-  const allowedId = Number(rawAllowedId)
-  if (!Number.isInteger(allowedId)) {
-    throw new Error('TELEGRAM_ALLOWED_USER_ID must be an integer Telegram user id')
-  }
-  return message.from?.id === allowedId
+  const allowedId = mustGetEnv('TELEGRAM_ALLOWED_USER_ID').trim()
+  if (!allowedId) throw new Error('TELEGRAM_ALLOWED_USER_ID must be a non-empty Telegram user id')
+  return String(message.from?.id ?? '') === allowedId
 }
 
 function getTextContent(message: TelegramMessage): string | undefined {
@@ -55,8 +52,10 @@ Deno.serve(async (req) => {
   const content = getTextContent(message)
   if (!content) return textResponse('ok')
 
-  const chatId = message.chat.id
-  const updateId = update.update_id
+  const chatId = String(message.chat.id)
+  const updateId = String(update.update_id)
+  const messageId = String(message.message_id)
+  const fromUserId = message.from?.id == null ? null : String(message.from.id)
 
   // 1) Upsert session
   const { data: sessionRows, error: sErr } = await supabase
@@ -84,9 +83,9 @@ Deno.serve(async (req) => {
     content,
     provider: 'telegram',
     provider_update_id: updateId,
-    telegram_message_id: message.message_id,
+    telegram_message_id: messageId,
     telegram_chat_id: chatId,
-    telegram_from_user_id: message.from?.id ?? null,
+    telegram_from_user_id: fromUserId,
     raw: update,
   })
 

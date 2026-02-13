@@ -17,12 +17,16 @@ create type enum_job_type as enum ('process_message', 'embed_memory', 'embed_mes
 create table if not exists sessions (
   id uuid primary key default gen_random_uuid(),
   channel enum_session_channel not null,
-  channel_chat_id bigint not null,
+  channel_chat_id text not null,
   title text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (channel, channel_chat_id)
 );
+
+-- External/provider identifiers are stored as text to avoid JS number precision loss.
+alter table sessions
+  alter column channel_chat_id type text using channel_chat_id::text;
 
 create table if not exists files (
   id uuid primary key default gen_random_uuid(),
@@ -56,10 +60,10 @@ create table if not exists messages (
   -- Vector search (384 dims for gte-small)
   embedding extensions.vector(384),
   provider text not null default 'telegram',
-  provider_update_id bigint,
-  telegram_message_id bigint,
-  telegram_chat_id bigint,
-  telegram_from_user_id bigint,
+  provider_update_id text,
+  telegram_message_id text,
+  telegram_chat_id text,
+  telegram_from_user_id text,
   telegram_sent_at timestamptz,
   file_id uuid references files(id),
   raw jsonb not null default '{}'::jsonb,
@@ -67,8 +71,17 @@ create table if not exists messages (
   created_at timestamptz not null default now()
 );
 
+alter table messages
+  alter column provider_update_id type text using provider_update_id::text;
+alter table messages
+  alter column telegram_message_id type text using telegram_message_id::text;
+alter table messages
+  alter column telegram_chat_id type text using telegram_chat_id::text;
+alter table messages
+  alter column telegram_from_user_id type text using telegram_from_user_id::text;
+
 create unique index if not exists messages_provider_update_id_uniq
-  on messages (provider_update_id)
+  on messages (provider, provider_update_id)
   where provider_update_id is not null;
 
 create index if not exists messages_session_created_idx
