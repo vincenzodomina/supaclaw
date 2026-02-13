@@ -5,7 +5,7 @@ import { telegramSendMessage } from "../_shared/telegram.ts";
 import {
   buildSystemPrompt,
   type ChatMessage,
-  generateAssistantReply,
+  generateAgentReply,
 } from "../_shared/llm.ts";
 import { downloadTextFromWorkspace } from "../_shared/storage.ts";
 import { embedText } from "../_shared/embeddings.ts";
@@ -186,7 +186,7 @@ async function processProcessMessage(job: JobRow) {
     })),
   ];
 
-  const reply = await generateAssistantReply({ messages });
+  const reply = await generateAgentReply({ messages });
 
   // Persist assistant message before delivery; retries will deliver pending messages.
   const { data: savedReply, error: saveErr } = await supabase
