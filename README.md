@@ -14,13 +14,13 @@ Get SupaClaw running in under 10 minutes.
 
 ## Prerequisites
 
-1. **Supabase Account**: Sign up at [supabase.com](https://supabase.com)
+1. **Supabase Account**: (Optional) Sign up at [supabase.com](https://supabase.com)
 2. **Supabase CLI installed**: Install via `brew install supabase/tap/supabase`
 3. **AI API Key**: Get one from [Anthropic](https://console.anthropic.com) or [OpenAI](https://platform.openai.com)
 
 ## Step 1: Set Up Supabase Project
 
-### Option A: Using Supabase Dashboard (Easiest)
+### Option A: Using Supabase Dashboard
 
 1. Go to [app.supabase.com](https://app.supabase.com)
 2. Click "New Project"
@@ -42,6 +42,12 @@ supabase projects create supaclaw
 supabase link --project-ref <your-project-id>
 # OR Self hosting locally
 supabase init
+supabase start
+```
+
+### Option C: Running Locally
+
+```bash
 supabase start
 ```
 
