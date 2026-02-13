@@ -479,3 +479,8 @@ begin
   );
 end;
 $$;
+
+-- Storage buckets
+insert into storage.buckets (id, name, public)
+values ('workspace', 'workspace', false)
+on conflict (id) do nothing;

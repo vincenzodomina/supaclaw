@@ -30,21 +30,6 @@ supabase start
 supabase db push --local
 ```
 
-## Step 3: Create Storage Buckets
-
-Create a **private** bucket named `workspace`.
-
-Inside that bucket, SupaClaw expects:
-
-```text
-.agents/AGENTS.md
-.agents/SOUL.md
-.agents/agents/<slug>/**
-.agents/tools/<slug>/**
-.agents/skills/<slug>/**
-.agents/workflows/<slug>/**
-```
-
 ## Step 4: Configure Environment
 
 Copy the template and fill in values:

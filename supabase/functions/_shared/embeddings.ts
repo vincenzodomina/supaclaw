@@ -1,7 +1,5 @@
 import { Supabase } from '@supabase/functions-js/edge-runtime.d.ts'
 
-export const EMBEDDING_DIMENSIONS = 384
-
 const session = new Supabase.ai.Session('gte-small')
 
 export async function embedText(input: string): Promise<number[]> {

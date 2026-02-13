@@ -120,9 +120,12 @@ async function processProcessMessage(job: JobRow) {
     return;
   }
 
-  const soul = await downloadTextFromWorkspace(".agents/SOUL.md").catch(() =>
-    null
-  );
+  const [agents, soul, identity, user] = await Promise.all([
+    downloadTextFromWorkspace(".agents/AGENTS.md"),
+    downloadTextFromWorkspace(".agents/SOUL.md"),
+    downloadTextFromWorkspace(".agents/IDENTITY.md"),
+    downloadTextFromWorkspace(".agents/USER.md"),
+  ]);
 
   // Memory retrieval in one query (pinned facts + summaries), then split by type.
   // We fetch a slightly larger candidate pool to preserve quality after filtering.
@@ -160,8 +163,11 @@ async function processProcessMessage(job: JobRow) {
     `[${m.type}] ${m.content}`
   );
 
-  const system = buildSystemPrompt({
+  const system = await buildSystemPrompt({
+    agents: agents ?? undefined,
     soul: soul ?? undefined,
+    identity: identity ?? undefined,
+    user: user ?? undefined,
     memories: memoryStrings,
   });
 

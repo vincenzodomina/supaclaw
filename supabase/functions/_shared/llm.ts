@@ -37,14 +37,30 @@ export async function generateAgentReply({
   return text?.trim() || "";
 }
 
-export async function buildSystemPrompt(
-  params: { soul?: string; memories?: string[] },
-) {
+export async function buildSystemPrompt(params: {
+  agents?: string;
+  soul?: string;
+  identity?: string;
+  user?: string;
+  memories?: string[];
+}) {
   const parts: string[] = [];
   parts.push("You are SupaClaw, a cloud-native personal agent.");
 
+  if (params.agents?.trim()) {
+    parts.push("\n## AGENTS\n" + params.agents.trim());
+  }
+
   if (params.soul?.trim()) {
     parts.push("\n## SOUL\n" + params.soul.trim());
+  }
+
+  if (params.identity?.trim()) {
+    parts.push("\n## IDENTITY\n" + params.identity.trim());
+  }
+
+  if (params.user?.trim()) {
+    parts.push("\n## USER\n" + params.user.trim());
   }
 
   if (params.memories?.length) {
@@ -55,7 +71,9 @@ export async function buildSystemPrompt(
   }
 
   const skillsBlock = await buildSkillsInstructionsBlock().catch(() => "");
-  parts.push(skillsBlock);
+  if (skillsBlock.trim()) {
+    parts.push(skillsBlock);
+  }
 
   return parts.join("\n");
 }
