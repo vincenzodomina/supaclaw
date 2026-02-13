@@ -2,34 +2,8 @@ import { jsonSchema, tool } from "ai";
 import {
   downloadTextFromWorkspace,
   listWorkspaceObjects,
-  uploadTextToWorkspace,
-  upsertWorkspaceFileRecord,
+  writeWorkspaceText,
 } from "./storage.ts";
-
-function sanitizeWorkspacePath(inputPath: string): string {
-  const normalizedPath = inputPath.replace(/\\/g, "/").replace(/^\/+/, "")
-    .replace(/\/+/g, "/");
-  if (!normalizedPath || normalizedPath.includes("..")) {
-    throw new Error("Invalid workspace path");
-  }
-  return normalizedPath;
-}
-
-function sanitizeWorkspacePrefix(inputPrefix: string | undefined): string {
-  const raw = (inputPrefix ?? "").trim();
-  if (!raw || raw === "." || raw === "./") return "";
-
-  const normalizedPath = raw
-    .replace(/\\/g, "/")
-    .replace(/^\/+/, "")
-    .replace(/\/+/g, "/")
-    .replace(/\/+$/, "");
-
-  if (normalizedPath.includes("..")) {
-    throw new Error("Invalid workspace path");
-  }
-  return normalizedPath;
-}
 
 function joinPrefix(prefix: string, name: string): string {
   return prefix ? `${prefix}/${name}` : name;
@@ -51,9 +25,8 @@ export const workspaceTools = {
       additionalProperties: false,
     }),
     execute: async ({ path }) => {
-      const safePath = sanitizeWorkspacePath(path);
-      const content = await downloadTextFromWorkspace(safePath);
-      return { path: safePath, exists: content !== null, content };
+      const content = await downloadTextFromWorkspace(path);
+      return { path, exists: content !== null, content };
     },
   }),
 
@@ -82,20 +55,10 @@ export const workspaceTools = {
       additionalProperties: false,
     }),
     execute: async ({ path, content, mime_type }) => {
-      const safePath = sanitizeWorkspacePath(path);
-
-      const upload = await uploadTextToWorkspace(safePath, content, {
+      const result = await writeWorkspaceText(path, content, {
         mimeType: mime_type,
       });
-
-      await upsertWorkspaceFileRecord({
-        bucket: upload.bucket,
-        objectPath: upload.objectPath,
-        content,
-        mimeType: mime_type,
-      });
-
-      return { ok: true, path: upload.objectPath };
+      return { ok: true, path: result.objectPath };
     },
   }),
 
@@ -113,8 +76,7 @@ export const workspaceTools = {
       additionalProperties: false,
     }),
     execute: async ({ path }) => {
-      const prefix = sanitizeWorkspacePrefix(path);
-      const { objects } = await listWorkspaceObjects(prefix);
+      const { prefix, objects } = await listWorkspaceObjects(path || "");
       const paths = objects.map((o) => joinPrefix(prefix, o.name));
       return { path: prefix, paths };
     },
@@ -160,9 +122,8 @@ export const workspaceTools = {
       additionalProperties: false,
     }),
     execute: async ({ path, edits }) => {
-      const safePath = sanitizeWorkspacePath(path);
-      const current = await downloadTextFromWorkspace(safePath);
-      if (current === null) throw new Error(`File not found: ${safePath}`);
+      const current = await downloadTextFromWorkspace(path);
+      if (current === null) throw new Error(`File not found: ${path}`);
 
       let next = current;
       const replacements: number[] = [];
@@ -186,15 +147,8 @@ export const workspaceTools = {
         }
       }
 
-      const upload = await uploadTextToWorkspace(safePath, next);
-
-      await upsertWorkspaceFileRecord({
-        bucket: upload.bucket,
-        objectPath: upload.objectPath,
-        content: next,
-      });
-
-      return { ok: true, path: upload.objectPath, replacements };
+      const result = await writeWorkspaceText(path, next);
+      return { ok: true, path: result.objectPath, replacements };
     },
   }),
 };

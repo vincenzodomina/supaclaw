@@ -6,7 +6,7 @@ function getWorkspaceBucketName(): string {
   return Deno.env.get("WORKSPACE_BUCKET") ?? "workspace";
 }
 
-function sanitizeObjectPath(objectPath: string): string {
+export function sanitizeObjectPath(objectPath: string): string {
   const normalizedPath = objectPath.replace(/\\/g, "/").replace(/^\/+/, "")
     .replace(/\/+/g, "/");
   if (!normalizedPath || normalizedPath.includes("..")) {
@@ -15,7 +15,7 @@ function sanitizeObjectPath(objectPath: string): string {
   return normalizedPath;
 }
 
-function sanitizeObjectPrefix(objectPathPrefix: string): string {
+export function sanitizeObjectPrefix(objectPathPrefix: string): string {
   const raw = objectPathPrefix.trim();
   if (!raw || raw === "." || raw === "./") return "";
 
@@ -99,7 +99,7 @@ export async function listWorkspaceObjects(
   return { bucket, prefix, objects: (data ?? []) };
 }
 
-export async function upsertWorkspaceFileRecord(params: {
+async function upsertWorkspaceFileRecord(params: {
   bucket: string;
   objectPath: string;
   content: string;
@@ -128,4 +128,22 @@ export async function upsertWorkspaceFileRecord(params: {
   if (error) {
     throw new Error(`Failed to upsert file record: ${error.message}`);
   }
+}
+
+/** Upload content to storage and upsert the corresponding file DB record. */
+export async function writeWorkspaceText(
+  objectPath: string,
+  content: string,
+  options?: { mimeType?: string },
+): Promise<{ bucket: string; objectPath: string }> {
+  const upload = await uploadTextToWorkspace(objectPath, content, options);
+
+  await upsertWorkspaceFileRecord({
+    bucket: upload.bucket,
+    objectPath: upload.objectPath,
+    content,
+    mimeType: options?.mimeType,
+  });
+
+  return upload;
 }

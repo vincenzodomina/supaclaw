@@ -2,6 +2,7 @@ import { generateText } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { workspaceTools } from "./workspace_tools.ts";
+import { skillsTools, buildSkillsInstructionsBlock } from "./skills.ts";
 
 export type ChatMessage = {
   role: "system" | "user" | "assistant";
@@ -16,6 +17,7 @@ export async function generateAgentReply({
   messages: ChatMessage[];
   provider?: "openai" | "anthropic" | "google";
   model?: string;
+  maxSteps?: number;
 }): Promise<string> {
   const openaiKey = Deno.env.get("OPENAI_API_KEY");
   const anthropicKey = Deno.env.get("ANTHROPIC_API_KEY");
@@ -29,13 +31,13 @@ export async function generateAgentReply({
   const { text } = await generateText({
     model: providerModel,
     messages,
-    tools: workspaceTools,
+    tools: { ...workspaceTools, ...skillsTools },
     ...(useOpenAI ? {} : { maxOutputTokens: 800 }),
   });
   return text?.trim() || "";
 }
 
-export function buildSystemPrompt(
+export async function buildSystemPrompt(
   params: { soul?: string; memories?: string[] },
 ) {
   const parts: string[] = [];
@@ -51,6 +53,9 @@ export function buildSystemPrompt(
         params.memories.map((m) => `- ${m}`).join("\n"),
     );
   }
+
+  const skillsBlock = await buildSkillsInstructionsBlock().catch(() => "");
+  parts.push(skillsBlock);
 
   return parts.join("\n");
 }
