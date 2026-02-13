@@ -127,23 +127,22 @@ async function processProcessMessage(job: JobRow) {
   // Memory retrieval in one query (pinned facts + summaries), then split by type.
   // We fetch a slightly larger candidate pool to preserve quality after filtering.
   const queryEmbedding = await embedText(inbound.content);
-  const { data: memoryCandidates, error: memErr } = await supabase.rpc(
-    "hybrid_search_memories",
-    {
-      query_text: inbound.content,
-      query_embedding: queryEmbedding,
-      match_count: 30,
-      filter_type: ["pinned_fact", "summary"],
-      filter_session_id: null,
-    },
-  );
+  const { data: hybrid, error: memErr } = await supabase.rpc("hybrid_search", {
+    query_text: inbound.content,
+    query_embedding: queryEmbedding,
+    match_count: 30,
+    search_tables: ["memories"],
+    filter_type: ["pinned_fact", "summary"],
+    filter_session_id: null,
+  });
   if (memErr) {
-    throw new Error(`hybrid_search_memories failed: ${memErr.message}`);
+    throw new Error(`hybrid_search failed: ${memErr.message}`);
   }
 
+  const memoryCandidates = (hybrid?.memories ?? []) as MemoryCandidate[];
   const pinnedFacts: MemoryCandidate[] = [];
   const summaries: MemoryCandidate[] = [];
-  for (const memory of (memoryCandidates ?? []) as MemoryCandidate[]) {
+  for (const memory of memoryCandidates) {
     if (memory.type === "pinned_fact" && pinnedFacts.length < 5) {
       pinnedFacts.push(memory);
       continue;

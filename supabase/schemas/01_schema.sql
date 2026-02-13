@@ -159,6 +159,7 @@ begin
 end;
 $$;
 
+
 -- Atomic claim (SKIP LOCKED)
 create or replace function claim_jobs(
   p_locked_by text,
@@ -319,168 +320,197 @@ after update of content on messages
 for each row
 execute function enqueue_message_embedding_job();
 
--- Hybrid search (RRF fusion) over memories with optional filters.
+-- Hybrid search (RRF fusion) across messages/files/memories with optional filters.
 -- Based on Supabase docs: https://supabase.com/docs/guides/ai/hybrid-search
-create or replace function hybrid_search_memories(
+create or replace function hybrid_search(
   query_text text,
   query_embedding extensions.vector(384),
   match_count int,
+  search_tables text[] default array['messages', 'files', 'memories'],
+  -- Optional filters (applied only to the relevant tables)
   filter_type enum_memory_type[] default null,
   filter_session_id uuid default null,
-  full_text_weight float default 1,
-  semantic_weight float default 1,
-  rrf_k int default 50
-)
-returns setof memories
-language sql
-as $$
-with base as (
-  select *
-  from memories
-  where (filter_type is null or type = any(filter_type))
-    and (filter_session_id is null or session_id = filter_session_id)
-),
-full_text as (
-  select
-    id,
-    row_number() over(order by ts_rank_cd(fts, websearch_to_tsquery(query_text)) desc) as rank_ix
-  from base
-  where fts @@ websearch_to_tsquery(query_text)
-  order by rank_ix
-  limit least(match_count, 30) * 2
-),
-semantic as (
-  select
-    id,
-    row_number() over (order by embedding <#> query_embedding) as rank_ix
-  from base
-  where embedding is not null
-  order by rank_ix
-  limit least(match_count, 30) * 2
-)
-select
-  base.*
-from
-  full_text
-  full outer join semantic
-    on full_text.id = semantic.id
-  join base
-    on coalesce(full_text.id, semantic.id) = base.id
-order by
-  coalesce(1.0 / (rrf_k + full_text.rank_ix), 0.0) * full_text_weight +
-  coalesce(1.0 / (rrf_k + semantic.rank_ix), 0.0) * semantic_weight
-  desc
-limit
-  least(match_count, 30)
-$$;
-
--- Hybrid search (RRF fusion) over messages with optional filters.
-create or replace function hybrid_search_messages(
-  query_text text,
-  query_embedding extensions.vector(384),
-  match_count int,
-  filter_session_id uuid default null,
   filter_role enum_message_role[] default null,
-  full_text_weight float default 1,
-  semantic_weight float default 1,
-  rrf_k int default 50
-)
-returns setof messages
-language sql
-as $$
-with base as (
-  select *
-  from messages
-  where (filter_session_id is null or session_id = filter_session_id)
-    and (filter_role is null or role = any(filter_role))
-),
-full_text as (
-  select
-    id,
-    row_number() over(order by ts_rank_cd(fts, websearch_to_tsquery(query_text)) desc) as rank_ix
-  from base
-  where fts @@ websearch_to_tsquery(query_text)
-  order by rank_ix
-  limit least(match_count, 30) * 2
-),
-semantic as (
-  select
-    id,
-    row_number() over (order by embedding <#> query_embedding) as rank_ix
-  from base
-  where embedding is not null
-  order by rank_ix
-  limit least(match_count, 30) * 2
-)
-select
-  base.*
-from
-  full_text
-  full outer join semantic
-    on full_text.id = semantic.id
-  join base
-    on coalesce(full_text.id, semantic.id) = base.id
-order by
-  coalesce(1.0 / (rrf_k + full_text.rank_ix), 0.0) * full_text_weight +
-  coalesce(1.0 / (rrf_k + semantic.rank_ix), 0.0) * semantic_weight
-  desc
-limit
-  least(match_count, 30)
-$$;
-
--- Hybrid search (RRF fusion) over files with optional filters.
-create or replace function hybrid_search_files(
-  query_text text,
-  query_embedding extensions.vector(384),
-  match_count int,
   filter_bucket text default null,
   filter_object_path_prefix text default null,
   full_text_weight float default 1,
   semantic_weight float default 1,
   rrf_k int default 50
 )
-returns setof files
-language sql
+returns jsonb
+language plpgsql
 as $$
-with base as (
-  select *
-  from files
-  where (filter_bucket is null or bucket = filter_bucket)
-    and (
-      filter_object_path_prefix is null
-      or object_path like filter_object_path_prefix || '%'
-    )
-),
-full_text as (
-  select
-    id,
-    row_number() over(order by ts_rank_cd(fts, websearch_to_tsquery(query_text)) desc) as rank_ix
-  from base
-  where fts @@ websearch_to_tsquery(query_text)
-  order by rank_ix
-  limit least(match_count, 30) * 2
-),
-semantic as (
-  select
-    id,
-    row_number() over (order by embedding <#> query_embedding) as rank_ix
-  from base
-  where embedding is not null
-  order by rank_ix
-  limit least(match_count, 30) * 2
-)
-select
-  base.*
-from
-  full_text
-  full outer join semantic
-    on full_text.id = semantic.id
-  join base
-    on coalesce(full_text.id, semantic.id) = base.id
-order by
-  coalesce(1.0 / (rrf_k + full_text.rank_ix), 0.0) * full_text_weight +
-  coalesce(1.0 / (rrf_k + semantic.rank_ix), 0.0) * semantic_weight
-  desc
-limit
-  least(match_count, 30)
+declare
+  v_tables text[];
+  v_messages jsonb := '[]'::jsonb;
+  v_files jsonb := '[]'::jsonb;
+  v_memories jsonb := '[]'::jsonb;
+begin
+  -- Normalize table selectors (default: all)
+  v_tables := array(
+    select lower(trim(t))
+    from unnest(coalesce(search_tables, array['messages', 'files', 'memories'])) as t
+    where t is not null and length(trim(t)) > 0
+  );
+
+  if exists (
+    select 1
+    from unnest(v_tables) as t
+    where t not in ('messages', 'files', 'memories')
+  ) then
+    raise exception
+      'hybrid_search: invalid search_tables %. Allowed: messages, files, memories',
+      v_tables;
+  end if;
+
+  if 'memories' = any(v_tables) then
+    select coalesce(jsonb_agg(row_json order by score desc), '[]'::jsonb)
+    into v_memories
+    from (
+      with base as (
+        select *
+        from memories
+        where (filter_type is null or type = any(filter_type))
+          and (filter_session_id is null or session_id = filter_session_id)
+      ),
+      full_text as (
+        select
+          id,
+          row_number() over (
+            order by ts_rank_cd(fts, websearch_to_tsquery(query_text)) desc
+          ) as rank_ix
+        from base
+        where fts @@ websearch_to_tsquery(query_text)
+        order by rank_ix
+        limit least(match_count, 30) * 2
+      ),
+      semantic as (
+        select
+          id,
+          row_number() over (order by embedding <#> query_embedding) as rank_ix
+        from base
+        where embedding is not null
+        order by rank_ix
+        limit least(match_count, 30) * 2
+      )
+      select
+        (to_jsonb(base) - 'embedding' - 'fts') as row_json,
+        (
+          coalesce(1.0 / (rrf_k + full_text.rank_ix), 0.0) * full_text_weight +
+          coalesce(1.0 / (rrf_k + semantic.rank_ix), 0.0) * semantic_weight
+        ) as score
+      from
+        full_text
+        full outer join semantic
+          on full_text.id = semantic.id
+        join base
+          on coalesce(full_text.id, semantic.id) = base.id
+      order by score desc
+      limit least(match_count, 30)
+    ) ranked;
+  end if;
+
+  if 'messages' = any(v_tables) then
+    select coalesce(jsonb_agg(row_json order by score desc), '[]'::jsonb)
+    into v_messages
+    from (
+      with base as (
+        select *
+        from messages
+        where (filter_session_id is null or session_id = filter_session_id)
+          and (filter_role is null or role = any(filter_role))
+      ),
+      full_text as (
+        select
+          id,
+          row_number() over (
+            order by ts_rank_cd(fts, websearch_to_tsquery(query_text)) desc
+          ) as rank_ix
+        from base
+        where fts @@ websearch_to_tsquery(query_text)
+        order by rank_ix
+        limit least(match_count, 30) * 2
+      ),
+      semantic as (
+        select
+          id,
+          row_number() over (order by embedding <#> query_embedding) as rank_ix
+        from base
+        where embedding is not null
+        order by rank_ix
+        limit least(match_count, 30) * 2
+      )
+      select
+        (to_jsonb(base) - 'embedding' - 'fts') as row_json,
+        (
+          coalesce(1.0 / (rrf_k + full_text.rank_ix), 0.0) * full_text_weight +
+          coalesce(1.0 / (rrf_k + semantic.rank_ix), 0.0) * semantic_weight
+        ) as score
+      from
+        full_text
+        full outer join semantic
+          on full_text.id = semantic.id
+        join base
+          on coalesce(full_text.id, semantic.id) = base.id
+      order by score desc
+      limit least(match_count, 30)
+    ) ranked;
+  end if;
+
+  if 'files' = any(v_tables) then
+    select coalesce(jsonb_agg(row_json order by score desc), '[]'::jsonb)
+    into v_files
+    from (
+      with base as (
+        select *
+        from files
+        where (filter_bucket is null or bucket = filter_bucket)
+          and (
+            filter_object_path_prefix is null
+            or object_path like filter_object_path_prefix || '%'
+          )
+      ),
+      full_text as (
+        select
+          id,
+          row_number() over (
+            order by ts_rank_cd(fts, websearch_to_tsquery(query_text)) desc
+          ) as rank_ix
+        from base
+        where fts @@ websearch_to_tsquery(query_text)
+        order by rank_ix
+        limit least(match_count, 30) * 2
+      ),
+      semantic as (
+        select
+          id,
+          row_number() over (order by embedding <#> query_embedding) as rank_ix
+        from base
+        where embedding is not null
+        order by rank_ix
+        limit least(match_count, 30) * 2
+      )
+      select
+        (to_jsonb(base) - 'embedding' - 'fts') as row_json,
+        (
+          coalesce(1.0 / (rrf_k + full_text.rank_ix), 0.0) * full_text_weight +
+          coalesce(1.0 / (rrf_k + semantic.rank_ix), 0.0) * semantic_weight
+        ) as score
+      from
+        full_text
+        full outer join semantic
+          on full_text.id = semantic.id
+        join base
+          on coalesce(full_text.id, semantic.id) = base.id
+      order by score desc
+      limit least(match_count, 30)
+    ) ranked;
+  end if;
+
+  return jsonb_build_object(
+    'messages', v_messages,
+    'files', v_files,
+    'memories', v_memories
+  );
+end;
 $$;

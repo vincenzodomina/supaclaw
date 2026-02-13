@@ -1,6 +1,7 @@
 import { generateText } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
+import { workspaceTools } from "./workspace_tools.ts";
 
 export type ChatMessage = {
   role: "system" | "user" | "assistant";
@@ -28,6 +29,7 @@ export async function generateAgentReply({
   const { text } = await generateText({
     model: providerModel,
     messages,
+    tools: workspaceTools,
     ...(useOpenAI ? {} : { maxOutputTokens: 800 }),
   });
   return text?.trim() || "";
@@ -50,8 +52,5 @@ export function buildSystemPrompt(
     );
   }
 
-  parts.push(
-    "\n## Rules\n- Be concise.\n- If you are unsure, ask a clarifying question.\n",
-  );
   return parts.join("\n");
 }
