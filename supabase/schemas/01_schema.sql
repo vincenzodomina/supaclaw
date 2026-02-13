@@ -8,7 +8,7 @@ create extension if not exists pg_cron;
 create extension if not exists supabase_vault cascade;
 
 -- Enums
-create type enum_session_channel as enum ('telegram', 'slack', 'whatsapp', 'discord', 'imessage', 'phone');
+create type enum_session_channel as enum ('telegram', 'slack', 'whatsapp', 'discord', 'imessage', 'phone', 'email', 'web', 'mobile', 'desktop', 'api');
 create type enum_message_role as enum ('assistant', 'user', 'system');
 create type enum_memory_type as enum ('summary', 'pinned_fact');
 create type enum_job_type as enum ('process_message', 'embed_memory', 'embed_message', 'embed_file', 'trigger');
@@ -25,10 +25,6 @@ create table if not exists sessions (
 );
 
 alter table sessions enable row level security;
-
--- External/provider identifiers are stored as text to avoid JS number precision loss.
-alter table sessions
-  alter column channel_chat_id type text using channel_chat_id::text;
 
 create table if not exists files (
   id uuid primary key default gen_random_uuid(),
@@ -75,14 +71,6 @@ create table if not exists messages (
 );
 
 alter table messages enable row level security;
-alter table messages
-  alter column provider_update_id type text using provider_update_id::text;
-alter table messages
-  alter column telegram_message_id type text using telegram_message_id::text;
-alter table messages
-  alter column telegram_chat_id type text using telegram_chat_id::text;
-alter table messages
-  alter column telegram_from_user_id type text using telegram_from_user_id::text;
 
 create unique index if not exists messages_provider_update_id_uniq
   on messages (provider, provider_update_id)
