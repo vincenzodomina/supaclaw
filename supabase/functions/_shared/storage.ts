@@ -1,5 +1,4 @@
 import { createServiceClient } from './supabase.ts'
-import { getEnv } from './env.ts'
 
 const supabase = createServiceClient()
 
@@ -12,7 +11,7 @@ function sanitizeObjectPath(objectPath: string): string {
 }
 
 export async function downloadTextFromWorkspace(objectPath: string): Promise<string | null> {
-  const bucket = getEnv('WORKSPACE_BUCKET') ?? 'workspace'
+  const bucket = Deno.env.get('WORKSPACE_BUCKET') ?? 'workspace'
   const safePath = sanitizeObjectPath(objectPath)
   const { data, error } = await supabase.storage.from(bucket).download(safePath)
   if (error) {

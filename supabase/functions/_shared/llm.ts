@@ -1,20 +1,18 @@
-import { getEnv, mustGetEnv } from './env.ts'
-
 export type ChatMessage = { role: 'system' | 'user' | 'assistant'; content: string }
 
 export async function generateAssistantReply(params: {
   messages: ChatMessage[]
 }): Promise<string> {
-  const openaiKey = getEnv('OPENAI_API_KEY')
-  const anthropicKey = getEnv('ANTHROPIC_API_KEY')
+  const openaiKey = Deno.env.get('OPENAI_API_KEY')
+  const anthropicKey = Deno.env.get('ANTHROPIC_API_KEY')
 
   if (openaiKey) {
-    const model = getEnv('OPENAI_MODEL') ?? 'gpt-4o-mini'
+    const model = Deno.env.get('OPENAI_MODEL') ?? 'gpt-4o-mini'
     return await openaiChatCompletion({ apiKey: openaiKey, model, messages: params.messages })
   }
 
   if (anthropicKey) {
-    const model = getEnv('ANTHROPIC_MODEL') ?? 'claude-3-5-sonnet-latest'
+    const model = Deno.env.get('ANTHROPIC_MODEL') ?? 'claude-3-5-sonnet-latest'
     return await anthropicMessage({ apiKey: anthropicKey, model, messages: params.messages })
   }
 
@@ -101,10 +99,3 @@ export function buildSystemPrompt(params: { soul?: string; memories?: string[] }
   parts.push('\n## Rules\n- Be concise.\n- If you are unsure, ask a clarifying question.\n')
   return parts.join('\n')
 }
-
-export function assertNoLLMSecretsInLogs() {
-  // Placeholder: keep this file as the single place that touches LLM secrets.
-  // If you add logging, avoid dumping request bodies with API keys.
-  void mustGetEnv
-}
-

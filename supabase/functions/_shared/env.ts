@@ -4,12 +4,8 @@ export function mustGetEnv(name: string): string {
   return value;
 }
 
-export function getEnv(name: string): string | undefined {
-  return Deno.env.get(name) ?? undefined;
-}
-
 export function parseIntEnv(name: string): number | undefined {
-  const raw = getEnv(name);
+  const raw = Deno.env.get(name);
   if (!raw) return undefined;
   const n = Number(raw);
   if (!Number.isFinite(n)) throw new Error(`Env var ${name} must be a number`);
