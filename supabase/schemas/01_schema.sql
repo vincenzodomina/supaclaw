@@ -24,6 +24,8 @@ create table if not exists sessions (
   unique (channel, channel_chat_id)
 );
 
+alter table sessions enable row level security;
+
 -- External/provider identifiers are stored as text to avoid JS number precision loss.
 alter table sessions
   alter column channel_chat_id type text using channel_chat_id::text;
@@ -46,6 +48,7 @@ create table if not exists files (
   unique (bucket, object_path)
 );
 
+alter table files enable row level security;
 create index if not exists files_fts_idx on files using gin(fts);
 create index if not exists files_embedding_idx on files using hnsw (embedding vector_ip_ops);
 
@@ -71,6 +74,7 @@ create table if not exists messages (
   created_at timestamptz not null default now()
 );
 
+alter table messages enable row level security;
 alter table messages
   alter column provider_update_id type text using provider_update_id::text;
 alter table messages
@@ -109,6 +113,7 @@ create table if not exists memories (
   updated_at timestamptz not null default now()
 );
 
+alter table memories enable row level security;
 create index if not exists memories_fts_idx on memories using gin(fts);
 create index if not exists memories_embedding_idx on memories using hnsw (embedding vector_ip_ops);
 create index if not exists memories_type_idx on memories (type);
@@ -238,17 +243,6 @@ $$;
 
 
 -- Enqueue embedding jobs whenever memory content changes (or is inserted).
-create or replace function memories_mark_embedding_stale()
-returns trigger
-language plpgsql
-as $$
-begin
-  new.embedding := null;
-  new.updated_at := now();
-  return new;
-end;
-$$;
-
 create or replace function enqueue_memory_embedding_job()
 returns trigger
 language plpgsql
@@ -266,18 +260,6 @@ begin
   );
 
   return new;
-end;
-$$;
-
-create or replace function files_mark_embedding_stale()
-returns trigger
-language plpgsql
-as $$
-begin
-  new.embedding := null;
-  new.updated_at := now();
-  return new;
-end;
 $$;
 
 create or replace function enqueue_file_embedding_job()
@@ -297,18 +279,6 @@ begin
   );
 
   return new;
-end;
-$$;
-
-create or replace function messages_mark_embedding_stale()
-returns trigger
-language plpgsql
-as $$
-begin
-  new.embedding := null;
-  new.updated_at := now();
-  return new;
-end;
 $$;
 
 create or replace function enqueue_message_embedding_job()
@@ -331,73 +301,31 @@ begin
 end;
 $$;
 
-drop trigger if exists memories_mark_embed_stale_on_insert on memories;
-create trigger memories_mark_embed_stale_on_insert
-before insert on memories
-for each row
-execute function memories_mark_embedding_stale();
-
-drop trigger if exists memories_mark_embed_stale_on_update on memories;
-create trigger memories_mark_embed_stale_on_update
-before update of content, type on memories
-for each row
-execute function memories_mark_embedding_stale();
-
-drop trigger if exists memories_enqueue_embed_on_insert on memories;
 create trigger memories_enqueue_embed_on_insert
 after insert on memories
 for each row
 execute function enqueue_memory_embedding_job();
 
-drop trigger if exists memories_enqueue_embed_on_update on memories;
 create trigger memories_enqueue_embed_on_update
 after update of content, type on memories
 for each row
 execute function enqueue_memory_embedding_job();
 
-drop trigger if exists files_mark_embed_stale_on_insert on files;
-create trigger files_mark_embed_stale_on_insert
-before insert on files
-for each row
-execute function files_mark_embedding_stale();
-
-drop trigger if exists files_mark_embed_stale_on_update on files;
-create trigger files_mark_embed_stale_on_update
-before update of name, content on files
-for each row
-execute function files_mark_embedding_stale();
-
-drop trigger if exists files_enqueue_embed_on_insert on files;
 create trigger files_enqueue_embed_on_insert
 after insert on files
 for each row
 execute function enqueue_file_embedding_job();
 
-drop trigger if exists files_enqueue_embed_on_update on files;
 create trigger files_enqueue_embed_on_update
 after update of name, content on files
 for each row
 execute function enqueue_file_embedding_job();
 
-drop trigger if exists messages_mark_embed_stale_on_insert on messages;
-create trigger messages_mark_embed_stale_on_insert
-before insert on messages
-for each row
-execute function messages_mark_embedding_stale();
-
-drop trigger if exists messages_mark_embed_stale_on_update on messages;
-create trigger messages_mark_embed_stale_on_update
-before update of content on messages
-for each row
-execute function messages_mark_embedding_stale();
-
-drop trigger if exists messages_enqueue_embed_on_insert on messages;
 create trigger messages_enqueue_embed_on_insert
 after insert on messages
 for each row
 execute function enqueue_message_embedding_job();
 
-drop trigger if exists messages_enqueue_embed_on_update on messages;
 create trigger messages_enqueue_embed_on_update
 after update of content on messages
 for each row
@@ -568,42 +496,3 @@ order by
 limit
   least(match_count, 30)
 $$;
-
--- Security posture:
--- - Deny direct table access to anon/authenticated.
--- - Keep RLS enabled with default-deny (no policies) since Edge Functions use service_role.
--- - Restrict RPC execution to service_role only.
-alter table sessions enable row level security;
-alter table files enable row level security;
-alter table messages enable row level security;
-alter table memories enable row level security;
-alter table jobs enable row level security;
-
-revoke all on table sessions from public, anon, authenticated;
-revoke all on table files from public, anon, authenticated;
-revoke all on table messages from public, anon, authenticated;
-revoke all on table memories from public, anon, authenticated;
-revoke all on table jobs from public, anon, authenticated;
-
-grant all on table sessions to service_role;
-grant all on table files to service_role;
-grant all on table messages to service_role;
-grant all on table memories to service_role;
-grant all on table jobs to service_role;
-
-revoke execute on function enqueue_job(text, text, jsonb, timestamptz, int) from public, anon, authenticated;
-revoke execute on function claim_jobs(text, int, int) from public, anon, authenticated;
-revoke execute on function job_succeed(bigint) from public, anon, authenticated;
-revoke execute on function job_fail(bigint, text, int) from public, anon, authenticated;
-revoke execute on function hybrid_search_memories(text, extensions.vector(384), int, enum_memory_type[], uuid, float, float, int) from public, anon, authenticated;
-revoke execute on function hybrid_search_messages(text, extensions.vector(384), int, uuid, enum_message_role[], float, float, int) from public, anon, authenticated;
-revoke execute on function hybrid_search_files(text, extensions.vector(384), int, text, text, float, float, int) from public, anon, authenticated;
-
-grant execute on function enqueue_job(text, text, jsonb, timestamptz, int) to service_role;
-grant execute on function claim_jobs(text, int, int) to service_role;
-grant execute on function job_succeed(bigint) to service_role;
-grant execute on function job_fail(bigint, text, int) to service_role;
-grant execute on function hybrid_search_memories(text, extensions.vector(384), int, enum_memory_type[], uuid, float, float, int) to service_role;
-grant execute on function hybrid_search_messages(text, extensions.vector(384), int, uuid, enum_message_role[], float, float, int) to service_role;
-grant execute on function hybrid_search_files(text, extensions.vector(384), int, text, text, float, float, int) to service_role;
-
