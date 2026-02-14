@@ -124,6 +124,8 @@ create table if not exists jobs (
   unique (dedupe_key)
 );
 
+alter table jobs enable row level security;
+
 create index if not exists jobs_due_idx 
   on jobs (status, run_at, id);
 
@@ -142,7 +144,7 @@ declare
   v_job_id bigint;
 begin
   insert into jobs (dedupe_key, type, payload, run_at, max_attempts, updated_at)
-  values (p_dedupe_key, p_type, p_payload, p_run_at, p_max_attempts, now())
+  values (p_dedupe_key, p_type::enum_job_type, p_payload, p_run_at, p_max_attempts, now())
   on conflict (dedupe_key) do update
     set
       type = excluded.type,
@@ -515,10 +517,6 @@ on conflict (id) do nothing;
 
 -- Prevent schema-poisoning/search_path attacks: don't let PUBLIC create objects in `public`.
 revoke create on schema public from public;
-
--- Defense-in-depth for internal queue table:
--- Even if table grants are accidentally added later, RLS with no policies blocks access for API roles.
-alter table jobs enable row level security;
 
 -- Restrict internal RPCs to backend-only (`service_role`).
 -- These functions are used by Edge Functions + cron and should not be callable via PostgREST.

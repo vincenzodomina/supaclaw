@@ -40,9 +40,12 @@ export async function downloadTextFromWorkspace(
     safePath,
   );
   if (error) {
-    // Not found is common for optional files
-    if (error.message?.toLowerCase().includes("not found")) return null;
-    throw new Error(`Storage download failed: ${error.message}`);
+    console.warn(
+      `Storage download failed for ${safePath}: ${
+        error.message ?? JSON.stringify(error)
+      }`,
+    );
+    return null;
   }
   return await data.text();
 }
@@ -96,7 +99,7 @@ export async function listWorkspaceObjects(
     throw new Error(`Storage list failed: ${error.message}`);
   }
 
-  return { bucket, prefix, objects: (data ?? []) };
+  return { bucket, prefix, objects: data ?? [] };
 }
 
 async function upsertWorkspaceFileRecord(params: {
