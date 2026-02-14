@@ -94,7 +94,7 @@ The script will:
 - verify with `getWebhookInfo`
 
 Requirements:
-- `ngrok` installed and authenticated (`ngrok config add-authtoken <token>`)
+- `ngrok` account + cli installed and authenticated (`brew install ngrok && ngrok config add-authtoken <token>`)
 - local Supabase running (`supabase start`)
 
 ## Step 7: Schedule the Worker (Cron)
