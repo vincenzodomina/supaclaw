@@ -18,82 +18,30 @@ Get SupaClaw running in under 10 minutes.
 ## Prerequisites
 
 1. **Supabase CLI installed**: Install via `brew install supabase/tap/supabase`
-2. **Docker Desktop App**: Must be running on your machine
-3. **AI API Key**: Get one from [Anthropic](https://console.anthropic.com) or [OpenAI](https://platform.openai.com)
+2. **Deno CLI installed**: Install via `brew install deno`
+3. **Docker Desktop App**: Must be running on your machine
+4. **AI API Key**: Get one from [Anthropic](https://console.anthropic.com) or [OpenAI](https://platform.openai.com)
 
-## Step 1: Run Supabase
+## Interactive setup walkthrough
+
+Use this script to get guided through all steps. It discovers already set config and running services and idempotently installs/migrate/starts everything step by step.
 
 ```bash
-cd supaclaw
+bash ./scripts/install.sh
+```
+
+In a nutshell this script actively runs:
+
+```bash
 supabase start
-```
-
-## Step 2: Initialize Database
-
-This will migrate and seed the database schema to the running Postgres instance in your local docker
-
-```bash
 supabase db push --local
+ngrok http 54321
+select vault.create_secret(...)
+curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook"
+supabase functions serve
 ```
 
-## Step 3: Configure Environment
-
-Copy the template and fill values, see explanation and how to get in [.env.example](supabase/.env.example) file:
-
-```bash
-cp supabase/.env.example supabase/.env.local
-```
-
-## Step 4: Run Edge Functions
-
-Run the functions in a local terminal session:
-
-```bash
-cd supaclaw/supabase/functions/_shared
-deno install
-supabase functions serve \
-  --env-file supabase/.env.local \
-  --import-map supabase/functions/_shared/deno.json \
-  --no-verify-jwt
-```
-
-## Step 5: Configure Telegram Webhook
-
-Telegram requires a public HTTPS URL for webhooks. If you run Supabase locally in Docker, expose your local Supabase API (`http://127.0.0.1:54321`) via a tunnel and set the webhook URL to that tunnel.
-
-Use the helper script to achieve this with ngrok:
-
-```bash
-./scripts/set-local-telegram-webhook.sh
-```
-
-The script will:
-- start `ngrok` for port `54321` using `supabase/.env.local` secrets
-- call Telegram `setWebhook` with `TELEGRAM_WEBHOOK_SECRET` and verify with `getWebhookInfo`
-
-Requirements:
-- `ngrok` account + cli installed and authenticated (`brew install ngrok && ngrok config add-authtoken <token>`)
-
-## Step 6: Set Vault secrets for scheduled cron worker
-
-The worker only calls the LLM when there are due jobs, so this acts as a minimal “heartbeat”.
-
-### Option A: Store secrets in Supabase Vault (Dashboard)
-
-1. In Supabase Dashboard, open **Database** -> **Vault** -> Click **Add secret**.
-2. Enter the secret value, and optionally set a unique **name** and description.
-3. Save. Use named secrets later from SQL via `vault.decrypted_secrets`.
-
-### Option B: Set Vault secrets via SQL Editor
-
-```sql
----note the docker host. That hostname is reachable from Docker on macOS.
-select vault.create_secret('http://host.docker.internal:54321', 'project_url'); 
-select vault.create_secret('<WORKER_SECRET>', 'worker_secret');
-select vault.create_secret('<SUPABASE_SERVICE_ROLE_KEY>', 'service_role_key');
-```
-
-## Step 7: Hello world!
+For a detailed walkthrough documentation (for local or cloud deployment) look at [DEPLOY.md](DEPLOY.md)
 
 **That's it.** No daemon setup, no complex config, no VPS, no security headaches.
 
