@@ -23,11 +23,20 @@ function getBackoffMs(attempt: number): number {
 }
 
 export async function telegramSendMessage(params: { chatId: string; text: string }) {
+  const chatId = params.chatId?.toString().trim()
+  const text = params.text?.toString().trim()
+  if (!chatId) {
+    throw new Error('telegramSendMessage requires non-empty chatId')
+  }
+  if (!text) {
+    throw new Error('telegramSendMessage requires non-empty text')
+  }
+
   const token = mustGetEnv('TELEGRAM_BOT_TOKEN')
   const url = `https://api.telegram.org/bot${token}/sendMessage`
   const payload = JSON.stringify({
-    chat_id: params.chatId,
-    text: params.text,
+    chat_id: chatId,
+    text,
   })
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {

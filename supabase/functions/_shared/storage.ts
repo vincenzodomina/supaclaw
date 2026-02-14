@@ -1,4 +1,5 @@
 import { createServiceClient } from "./supabase.ts";
+import { logger } from "./logger.ts";
 
 const supabase = createServiceClient();
 
@@ -31,6 +32,15 @@ export function sanitizeObjectPrefix(objectPathPrefix: string): string {
   return normalizedPath;
 }
 
+function isStorageNotFound(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const err = error as Record<string, unknown>;
+  const statusCode = err.statusCode;
+  const status = err.status;
+  const message = typeof err.message === "string" ? err.message.toLowerCase() : "";
+  return statusCode === 404 || status === 404 || message.includes("not found");
+}
+
 export async function downloadTextFromWorkspace(
   objectPath: string,
 ): Promise<string | null> {
@@ -40,11 +50,16 @@ export async function downloadTextFromWorkspace(
     safePath,
   );
   if (error) {
-    console.warn(
-      `Storage download failed for ${safePath}: ${
-        error.message ?? JSON.stringify(error)
-      }`,
-    );
+    if (isStorageNotFound(error)) {
+      // Agent/profile files are optional; callers should treat missing files as absent context.
+      logger.debug("storage.download.not_found", { bucket, objectPath: safePath });
+      return null;
+    }
+    logger.warn("storage.download.failed", {
+      bucket,
+      objectPath: safePath,
+      error,
+    });
     return null;
   }
   return await data.text();

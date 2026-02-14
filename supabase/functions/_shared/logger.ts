@@ -36,6 +36,12 @@ function serializeError(error: unknown) {
   return error
 }
 
+function omitUndefined(meta: Record<string, unknown>) {
+  return Object.fromEntries(
+    Object.entries(meta).filter(([, value]) => value !== undefined),
+  )
+}
+
 function writeLog(
   level: LogLevel,
   message: string,
@@ -47,7 +53,7 @@ function writeLog(
     ts: new Date().toISOString(),
     level,
     msg: message,
-    ...meta,
+    ...omitUndefined(meta),
   }
   const line = JSON.stringify(payload)
 
@@ -73,8 +79,9 @@ export const logger = {
     message: string,
     meta?: Record<string, unknown> & { error?: unknown },
   ) =>
-    writeLog('error', message, {
-      ...meta,
-      error: meta?.error ? serializeError(meta.error) : undefined,
-    }),
+    writeLog(
+      'error',
+      message,
+      meta?.error ? { ...meta, error: serializeError(meta.error) } : (meta ?? {}),
+    ),
 }

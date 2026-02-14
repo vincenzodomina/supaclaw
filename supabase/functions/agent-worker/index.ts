@@ -29,6 +29,8 @@ type RecentMessage = {
 };
 
 const supabase = createServiceClient();
+const FALLBACK_REPLY =
+  "I hit a temporary issue generating a response. Please try again in a moment.";
 
 function isAuthorized(req: Request) {
   const expected = mustGetEnv("WORKER_SECRET");
@@ -88,7 +90,11 @@ async function processProcessMessage(job: JobRow) {
   if (iErr) throw new Error(`Failed to load inbound message: ${iErr.message}`);
   if (!inbound) {
     // Nothing to do (could be a duplicate update we ignored)
-    logger.info("job.process_message.no_inbound", { jobId: job.id, sessionId, updateId });
+    logger.info("job.process_message.no_inbound", {
+      jobId: job.id,
+      sessionId,
+      updateId,
+    });
     return;
   }
 
@@ -113,9 +119,33 @@ async function processProcessMessage(job: JobRow) {
 
     const existingChatId =
       existingReply?.telegram_chat_id?.toString()?.trim() || telegramChatId;
+    let textToDeliver = (existingReply.content ?? "").trim();
+    if (!textToDeliver) {
+      logger.warn("job.process_message.redeliver_empty_content", {
+        jobId: job.id,
+        replyId: existingReply.id,
+        inboundId: inbound.id,
+      });
+      textToDeliver = await buildAssistantReply({
+        jobId: job.id,
+        sessionId,
+        inboundId: inbound.id,
+        inboundContent: inbound.content,
+      });
+      const { error: repairErr } = await supabase
+        .from("messages")
+        .update({ content: textToDeliver })
+        .eq("id", existingReply.id);
+      if (repairErr) {
+        throw new Error(
+          `Failed to repair empty assistant message: ${repairErr.message}`,
+        );
+      }
+    }
+
     await telegramSendMessage({
       chatId: existingChatId,
-      text: existingReply.content,
+      text: textToDeliver,
     });
 
     const { error: deliveredErr } = await supabase
@@ -134,93 +164,11 @@ async function processProcessMessage(job: JobRow) {
     return;
   }
 
-  const [agents, soul, identity, user, bootstrap, heartbeat, tools, memory] = await Promise.all([
-    downloadTextFromWorkspace(".agents/AGENTS.md"),
-    downloadTextFromWorkspace(".agents/SOUL.md"),
-    downloadTextFromWorkspace(".agents/IDENTITY.md"),
-    downloadTextFromWorkspace(".agents/USER.md"),
-    downloadTextFromWorkspace(".agents/BOOTSTRAP.md"),
-    downloadTextFromWorkspace(".agents/HEARTBEAT.md"),
-    downloadTextFromWorkspace(".agents/TOOLS.md"),
-    downloadTextFromWorkspace(".agents/MEMORY.md"),
-  ]);
-
-  // Memory retrieval in one query (pinned facts + summaries), then split by type.
-  // We fetch a slightly larger candidate pool to preserve quality after filtering.
-  const queryEmbedding = await embedText(inbound.content);
-  logger.debug("job.process_message.embedding_ready", {
+  const reply = await buildAssistantReply({
     jobId: job.id,
+    sessionId,
     inboundId: inbound.id,
-  });
-  const { data: hybrid, error: memErr } = await supabase.rpc("hybrid_search", {
-    query_text: inbound.content,
-    query_embedding: queryEmbedding,
-    match_count: 30,
-    search_tables: ["memories"],
-    filter_type: ["pinned_fact", "summary"],
-    filter_session_id: null,
-  });
-  if (memErr) {
-    throw new Error(`hybrid_search failed: ${memErr.message}`);
-  }
-
-  const memoryCandidates = (hybrid?.memories ?? []) as MemoryCandidate[];
-  const pinnedFacts: MemoryCandidate[] = [];
-  const summaries: MemoryCandidate[] = [];
-  for (const memory of memoryCandidates) {
-    if (memory.type === "pinned_fact" && pinnedFacts.length < 5) {
-      pinnedFacts.push(memory);
-      continue;
-    }
-    if (
-      memory.type === "summary" && memory.session_id === sessionId &&
-      summaries.length < 5
-    ) {
-      summaries.push(memory);
-    }
-    if (pinnedFacts.length >= 5 && summaries.length >= 5) break;
-  }
-
-  const memoryStrings = [...pinnedFacts, ...summaries].map((m) =>
-    `[${m.type}] ${m.content}`
-  );
-
-  const system = await buildSystemPrompt({
-    agents: agents ?? undefined,
-    soul: soul ?? undefined,
-    identity: identity ?? undefined,
-    user: user ?? undefined,
-    bootstrap: bootstrap ?? undefined,
-    heartbeat: heartbeat ?? undefined,
-    tools: tools ?? undefined,
-    memory: memory ?? undefined,
-    memories: memoryStrings,
-  });
-
-  // Build short chat context (last N messages).
-  // Query newest first for index efficiency, then reverse for chronological model input.
-  const { data: recent, error: recentErr } = await supabase
-    .from("messages")
-    .select("role, content")
-    .eq("session_id", sessionId)
-    .order("created_at", { ascending: false })
-    .limit(20);
-  if (recentErr) {
-    throw new Error(`Failed to load recent messages: ${recentErr.message}`);
-  }
-
-  const messages: ChatMessage[] = [
-    { role: "system", content: system },
-    ...(recent ?? []).reverse().map((m: RecentMessage) => ({
-      role: m.role,
-      content: m.content,
-    })),
-  ];
-
-  const reply = await generateAgentReply({ messages });
-  logger.debug("job.process_message.reply_generated", {
-    jobId: job.id,
-    replyLength: reply.length,
+    inboundContent: inbound.content,
   });
 
   // Persist assistant message before delivery; retries will deliver pending messages.
@@ -259,6 +207,113 @@ async function processProcessMessage(job: JobRow) {
   });
 }
 
+async function buildAssistantReply(params: {
+  jobId: number;
+  sessionId: string;
+  inboundId: number;
+  inboundContent: string;
+}) {
+  const [agents, soul, identity, user, bootstrap, heartbeat, tools, memory] =
+    await Promise.all([
+      downloadTextFromWorkspace(".agents/AGENTS.md"),
+      downloadTextFromWorkspace(".agents/SOUL.md"),
+      downloadTextFromWorkspace(".agents/IDENTITY.md"),
+      downloadTextFromWorkspace(".agents/USER.md"),
+      downloadTextFromWorkspace(".agents/BOOTSTRAP.md"),
+      downloadTextFromWorkspace(".agents/HEARTBEAT.md"),
+      downloadTextFromWorkspace(".agents/TOOLS.md"),
+      downloadTextFromWorkspace(".agents/MEMORY.md"),
+    ]);
+
+  // Memory retrieval in one query (pinned facts + summaries), then split by type.
+  // We fetch a slightly larger candidate pool to preserve quality after filtering.
+  const queryEmbedding = await embedText(params.inboundContent);
+  logger.debug("job.process_message.embedding_ready", {
+    jobId: params.jobId,
+    inboundId: params.inboundId,
+  });
+  const { data: hybrid, error: memErr } = await supabase.rpc("hybrid_search", {
+    query_text: params.inboundContent,
+    query_embedding: queryEmbedding,
+    match_count: 30,
+    search_tables: ["memories"],
+    filter_type: ["pinned_fact", "summary"],
+    filter_session_id: null,
+  });
+  if (memErr) {
+    throw new Error(`hybrid_search failed: ${memErr.message}`);
+  }
+
+  const memoryCandidates = (hybrid?.memories ?? []) as MemoryCandidate[];
+  const pinnedFacts: MemoryCandidate[] = [];
+  const summaries: MemoryCandidate[] = [];
+  for (const memory of memoryCandidates) {
+    if (memory.type === "pinned_fact" && pinnedFacts.length < 5) {
+      pinnedFacts.push(memory);
+      continue;
+    }
+    if (
+      memory.type === "summary" && memory.session_id === params.sessionId &&
+      summaries.length < 5
+    ) {
+      summaries.push(memory);
+    }
+    if (pinnedFacts.length >= 5 && summaries.length >= 5) break;
+  }
+
+  const memoryStrings = [...pinnedFacts, ...summaries].map((m) =>
+    `[${m.type}] ${m.content}`
+  );
+
+  const system = await buildSystemPrompt({
+    agents: agents ?? undefined,
+    soul: soul ?? undefined,
+    identity: identity ?? undefined,
+    user: user ?? undefined,
+    bootstrap: bootstrap ?? undefined,
+    heartbeat: heartbeat ?? undefined,
+    tools: tools ?? undefined,
+    memory: memory ?? undefined,
+    memories: memoryStrings,
+  });
+
+  // Build short chat context (last N messages).
+  // Query newest first for index efficiency, then reverse for chronological model input.
+  const { data: recent, error: recentErr } = await supabase
+    .from("messages")
+    .select("role, content")
+    .eq("session_id", params.sessionId)
+    .order("created_at", { ascending: false })
+    .limit(20);
+  if (recentErr) {
+    throw new Error(`Failed to load recent messages: ${recentErr.message}`);
+  }
+
+  const messages: ChatMessage[] = [
+    { role: "system", content: system },
+    ...(recent ?? []).reverse().map((m: RecentMessage) => ({
+      role: m.role,
+      content: m.content,
+    })),
+  ];
+
+  const rawReply = await generateAgentReply({ messages });
+  const reply = rawReply.trim();
+  if (!reply) {
+    logger.warn("job.process_message.reply_empty", {
+      jobId: params.jobId,
+      inboundId: params.inboundId,
+      recentCount: recent?.length ?? 0,
+    });
+    return FALLBACK_REPLY;
+  }
+  logger.debug("job.process_message.reply_generated", {
+    jobId: params.jobId,
+    replyLength: reply.length,
+  });
+  return reply;
+}
+
 function processTrigger(job: JobRow) {
   // Trigger jobs are intentionally accepted as no-op for now.
   // This keeps trigger-webhook usable without creating retry noise.
@@ -277,7 +332,11 @@ const EMBED_CONFIG: Partial<Record<JobRow["type"], EmbedConfig>> = {
 };
 
 async function processEmbed(job: JobRow, config: EmbedConfig) {
-  logger.info("job.embed.start", { jobId: job.id, type: job.type, table: config.table });
+  logger.info("job.embed.start", {
+    jobId: job.id,
+    type: job.type,
+    table: config.table,
+  });
   const id = job.payload[config.idKey];
   if (!id) throw new Error(`Invalid ${job.type} payload`);
 
@@ -337,7 +396,11 @@ Deno.serve(async (req) => {
 
     for (const job of jobs) {
       const jobStartedAt = Date.now();
-      logger.info("worker.job.start", { workerId, jobId: job.id, type: job.type });
+      logger.info("worker.job.start", {
+        workerId,
+        jobId: job.id,
+        type: job.type,
+      });
       try {
         await processJob(job);
         await jobSucceed(job.id);
