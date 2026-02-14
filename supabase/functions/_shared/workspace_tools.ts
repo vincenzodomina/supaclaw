@@ -25,7 +25,7 @@ export const workspaceTools = {
       additionalProperties: false,
     }),
     execute: async ({ path }) => {
-      const content = await downloadTextFromWorkspace(path);
+      const content = await downloadTextFromWorkspace(path, { optional: true });
       return { path, exists: content !== null, content };
     },
   }),
@@ -122,7 +122,7 @@ export const workspaceTools = {
       additionalProperties: false,
     }),
     execute: async ({ path, edits }) => {
-      const current = await downloadTextFromWorkspace(path);
+      const current = await downloadTextFromWorkspace(path, { optional: true });
       if (current === null) throw new Error(`File not found: ${path}`);
 
       let next = current;

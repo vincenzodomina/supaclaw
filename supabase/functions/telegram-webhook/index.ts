@@ -42,7 +42,12 @@ Deno.serve(async (req) => {
   if (req.method !== 'POST') return textResponse('method not allowed', { status: 405 })
   if (!verifyTelegramSecret(req)) return textResponse('forbidden', { status: 403 })
 
-  const update = (await req.json()) as TelegramUpdate
+  let update: TelegramUpdate
+  try {
+    update = (await req.json()) as TelegramUpdate
+  } catch {
+    return textResponse('invalid json', { status: 400 })
+  }
   const message = update.message ?? update.edited_message
   if (!message) return textResponse('ok')
 

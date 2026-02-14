@@ -43,6 +43,7 @@ function isStorageNotFound(error: unknown): boolean {
 
 export async function downloadTextFromWorkspace(
   objectPath: string,
+  options?: { optional?: boolean },
 ): Promise<string | null> {
   const bucket = getWorkspaceBucketName();
   const safePath = sanitizeObjectPath(objectPath);
@@ -53,6 +54,15 @@ export async function downloadTextFromWorkspace(
     if (isStorageNotFound(error)) {
       // Agent/profile files are optional; callers should treat missing files as absent context.
       logger.debug("storage.download.not_found", { bucket, objectPath: safePath });
+      return null;
+    }
+    if (options?.optional) {
+      // Optional reads should not produce warn-level noise in normal flows.
+      logger.debug("storage.download.optional_unavailable", {
+        bucket,
+        objectPath: safePath,
+        error,
+      });
       return null;
     }
     logger.warn("storage.download.failed", {

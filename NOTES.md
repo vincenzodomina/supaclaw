@@ -68,3 +68,9 @@ Super wings also has a marketplace in plug-in and extension ecosystem, let's exp
 The same agent end point that gets Vogt by the heartbeat or messages from the message. Provider gateway should be also available to be involved by external triggers for example from other apps so that no tokens get wasted because of a heartbeat agent invocation, or the agent has to look up what is pending and needs to be done just to explore troika external lives and then trigger them as the agent which is something that can be easily created an automated with traditional code to be more efficient and more reliable and more immediate
 
 Ther ecould be a Trigger based strategy to avoid wasted heartbeat thinking tokens tokens to decide on whats due: Model “work” as explicit jobs in DB; cron just runs due jobs. External apps create jobs via a simple authenticated HTTP endpoint. An additional approach could be a "tasks" table where agents triggered by events or the user can post tasks, which a heartbeat cron can query and if existing records, pick up a task an only then send to the AI, not the AI alwys automatically having to decide if there is a task pending. But external events triggering jobs can drastically reduce the heartbeat work for most use cases.
+
+Caveats & Gotchas
+
+- There is no oter user than me, the whole supabase project only for me so there are often SUPABASE_SERVICE_ROLE_KEY level access used here and there and no user_id stored in any table. The assumption is that this is a per-user setup, and only me and my agent can access.
+
+- Deno: heard of people complaining because of not being node and eventual compatibility issues. But no problems encountered so far in this project.

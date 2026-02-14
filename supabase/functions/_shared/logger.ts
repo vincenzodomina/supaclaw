@@ -36,6 +36,15 @@ function serializeError(error: unknown) {
   return error
 }
 
+function serializeErrorsInMeta(meta: Record<string, unknown>) {
+  return Object.fromEntries(
+    Object.entries(meta).map(([key, value]) => [
+      key,
+      value instanceof Error ? serializeError(value) : value,
+    ]),
+  )
+}
+
 function omitUndefined(meta: Record<string, unknown>) {
   return Object.fromEntries(
     Object.entries(meta).filter(([, value]) => value !== undefined),
@@ -53,7 +62,7 @@ function writeLog(
     ts: new Date().toISOString(),
     level,
     msg: message,
-    ...omitUndefined(meta),
+    ...omitUndefined(serializeErrorsInMeta(meta)),
   }
   const line = JSON.stringify(payload)
 

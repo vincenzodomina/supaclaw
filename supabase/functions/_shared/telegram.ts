@@ -59,7 +59,18 @@ export async function telegramSendMessage(params: { chatId: string; text: string
       throw new Error(`Telegram sendMessage failed (${res.status}) after ${attempt} attempts: ${body}`)
     }
 
-    const retryAfterMs = parseRetryAfterMs(res.headers.get('retry-after'))
+    let retryAfterMs: number | null = parseRetryAfterMs(res.headers.get('retry-after'))
+    if (res.status === 429 && body) {
+      try {
+        const parsed = JSON.parse(body) as { parameters?: { retry_after?: unknown } }
+        const retryAfter = parsed?.parameters?.retry_after
+        retryAfterMs = parseRetryAfterMs(
+          retryAfter == null ? null : String(retryAfter),
+        ) ?? retryAfterMs
+      } catch {
+        // Ignore malformed provider body and fall back to header/backoff.
+      }
+    }
     await sleep(retryAfterMs ?? getBackoffMs(attempt))
   }
 }

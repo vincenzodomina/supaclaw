@@ -215,36 +215,46 @@ async function buildAssistantReply(params: {
 }) {
   const [agents, soul, identity, user, bootstrap, heartbeat, tools, memory] =
     await Promise.all([
-      downloadTextFromWorkspace(".agents/AGENTS.md"),
-      downloadTextFromWorkspace(".agents/SOUL.md"),
-      downloadTextFromWorkspace(".agents/IDENTITY.md"),
-      downloadTextFromWorkspace(".agents/USER.md"),
-      downloadTextFromWorkspace(".agents/BOOTSTRAP.md"),
-      downloadTextFromWorkspace(".agents/HEARTBEAT.md"),
-      downloadTextFromWorkspace(".agents/TOOLS.md"),
-      downloadTextFromWorkspace(".agents/MEMORY.md"),
+      downloadTextFromWorkspace(".agents/AGENTS.md", { optional: true }),
+      downloadTextFromWorkspace(".agents/SOUL.md", { optional: true }),
+      downloadTextFromWorkspace(".agents/IDENTITY.md", { optional: true }),
+      downloadTextFromWorkspace(".agents/USER.md", { optional: true }),
+      downloadTextFromWorkspace(".agents/BOOTSTRAP.md", { optional: true }),
+      downloadTextFromWorkspace(".agents/HEARTBEAT.md", { optional: true }),
+      downloadTextFromWorkspace(".agents/TOOLS.md", { optional: true }),
+      downloadTextFromWorkspace(".agents/MEMORY.md", { optional: true }),
     ]);
 
   // Memory retrieval in one query (pinned facts + summaries), then split by type.
   // We fetch a slightly larger candidate pool to preserve quality after filtering.
-  const queryEmbedding = await embedText(params.inboundContent);
-  logger.debug("job.process_message.embedding_ready", {
-    jobId: params.jobId,
-    inboundId: params.inboundId,
-  });
-  const { data: hybrid, error: memErr } = await supabase.rpc("hybrid_search", {
-    query_text: params.inboundContent,
-    query_embedding: queryEmbedding,
-    match_count: 30,
-    search_tables: ["memories"],
-    filter_type: ["pinned_fact", "summary"],
-    filter_session_id: null,
-  });
-  if (memErr) {
-    throw new Error(`hybrid_search failed: ${memErr.message}`);
+  let memoryCandidates: MemoryCandidate[] = [];
+  try {
+    const queryEmbedding = await embedText(params.inboundContent);
+    logger.debug("job.process_message.embedding_ready", {
+      jobId: params.jobId,
+      inboundId: params.inboundId,
+    });
+    const { data: hybrid, error: memErr } = await supabase.rpc("hybrid_search", {
+      query_text: params.inboundContent,
+      query_embedding: queryEmbedding,
+      match_count: 30,
+      search_tables: ["memories"],
+      filter_type: ["pinned_fact", "summary"],
+      filter_session_id: null,
+    });
+    if (memErr) {
+      throw new Error(`hybrid_search failed: ${memErr.message}`);
+    }
+    memoryCandidates = (hybrid?.memories ?? []) as MemoryCandidate[];
+  } catch (error) {
+    logger.warn("job.process_message.memory_search_failed", {
+      jobId: params.jobId,
+      inboundId: params.inboundId,
+      message: error instanceof Error ? error.message : String(error),
+      error,
+    });
   }
 
-  const memoryCandidates = (hybrid?.memories ?? []) as MemoryCandidate[];
   const pinnedFacts: MemoryCandidate[] = [];
   const summaries: MemoryCandidate[] = [];
   for (const memory of memoryCandidates) {
