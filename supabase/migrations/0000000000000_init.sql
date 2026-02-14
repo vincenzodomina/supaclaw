@@ -242,6 +242,8 @@ select cron.schedule(
            || '/functions/v1/agent-worker',
     headers := jsonb_build_object(
       'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name='service_role_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name='service_role_key'),
       'x-worker-secret', (select decrypted_secret from vault.decrypted_secrets where name='worker_secret')
     ),
     body := '{}'::jsonb

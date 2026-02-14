@@ -97,6 +97,7 @@ The worker only calls the LLM when there are due jobs, so this acts as a minimal
 ```sql
 select vault.create_secret('https://<project-ref>.supabase.co', 'project_url');
 select vault.create_secret('<WORKER_SECRET>', 'worker_secret');
+select vault.create_secret('<SUPABASE_SERVICE_ROLE_KEY>', 'service_role_key');
 ```
 
 ## Step 7: Hello world!
