@@ -40,16 +40,16 @@ cp supabase/.env.example supabase/.env.local
 
 At minimum, set:
 
-- `SUPABASE_URL`
-- `SUPABASE_SERVICE_ROLE_KEY`
-- `TELEGRAM_BOT_TOKEN`
-- `TELEGRAM_WEBHOOK_SECRET`
-- `TELEGRAM_ALLOWED_USER_ID` (required; webhook fails closed if missing)
-- `WORKER_SECRET`
-- `TRIGGER_WEBHOOK_SECRET` (required if you want to use `trigger-webhook`)
+- `SUPABASE_URL`              (get from terminal output when started supabase, or from cloud dashboard)
+- `SUPABASE_SERVICE_ROLE_KEY` (same)
+- `TELEGRAM_BOT_TOKEN`        (get inside Telegram from Botfather when creating bot)
+- `TELEGRAM_WEBHOOK_SECRET`   (create yourself, make it strong. e.g. with `openssl rand -hex 32`)
+- `TELEGRAM_ALLOWED_USER_ID`  (get from telegram)
+- `WORKER_SECRET`             (create yourself) 
+- `TRIGGER_WEBHOOK_SECRET`    (create yourself) 
 - One LLM provider:
-  - `OPENAI_API_KEY` (and optionally `OPENAI_MODEL`)
-  - OR `ANTHROPIC_API_KEY` (and optionally `ANTHROPIC_MODEL`)
+  - `OPENAI_API_KEY` (and optionally `OPENAI_MODEL`, get from https://platform.openai.com)
+  - OR `ANTHROPIC_API_KEY` (and optionally `ANTHROPIC_MODEL`, get from https://claude.ai)
 
 ## Step 5: Deploy Edge Functions
 
