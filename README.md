@@ -66,40 +66,22 @@ The script will:
 Requirements:
 - `ngrok` account + cli installed and authenticated (`brew install ngrok && ngrok config add-authtoken <token>`)
 
-## Step 7: Schedule the Worker (Cron)
+## Step 6: Set Vault secrets for scheduled cron worker
 
 The worker only calls the LLM when there are due jobs, so this acts as a minimal “heartbeat”.
 
-In Supabase Dashboard → SQL Editor, run (adapted from Supabase docs):
+### Option A: Store secrets in Supabase Vault (Dashboard)
+
+1. In Supabase Dashboard, open **Database** -> **Vault** -> Click **Add secret**.
+2. Enter the secret value, and optionally set a unique **name** and description.
+3. Save. Use named secrets later from SQL via `vault.decrypted_secrets`.
+
+### Option B: Set Vault secrets via SQL Editor
 
 ```sql
--- Store secrets (Vault)
 select vault.create_secret('https://<project-ref>.supabase.co', 'project_url');
 select vault.create_secret('<WORKER_SECRET>', 'worker_secret');
-
--- Schedule worker every minute
-select cron.schedule(
-  'supaclaw-agent-worker',
-  '* * * * *',
-  $$
-  select extensions.http_post(
-    url := (select decrypted_secret from vault.decrypted_secrets where name='project_url')
-           || '/functions/v1/agent-worker',
-    headers := jsonb_build_object(
-      'Content-Type', 'application/json',
-      'x-worker-secret', (select decrypted_secret from vault.decrypted_secrets where name='worker_secret')
-    ),
-    body := '{}'::jsonb
-  );
-  $$
-);
 ```
-
-Docs:
-- [Scheduling Edge Functions](https://supabase.com/docs/guides/functions/schedule-functions)
-- [Cron](https://supabase.com/docs/guides/cron)
-- [pg_net](https://supabase.com/docs/guides/database/extensions/pg_net)
-- [Vault](https://supabase.com/docs/guides/database/vault)
 
 ## Step 7: Hello world!
 
@@ -128,10 +110,10 @@ Docs:
 
 ## Credits
 
-Inspired by [OpenClaw](https://github.com/openclaw/openclaw) - the full-featured self-hosted AI agent.
-
-Built with:
-- [Supabase](https://supabase.com) - Backend as a service
+Inspired by [OpenClaw](https://github.com/openclaw/openclaw) - amazing project!
+Built with: 
+- [Supabase](https://supabase.com) - Because we love it
+- [Vercel AI SDK](https://ai-sdk.dev/)
 
 ## License
 

@@ -230,6 +230,22 @@ begin
 end;
 $$;
 
+-- Schedule worker every minute
+select cron.schedule(
+  'supaclaw-agent-worker',
+  '* * * * *',
+  $$
+  select extensions.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name='project_url')
+           || '/functions/v1/agent-worker',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'x-worker-secret', (select decrypted_secret from vault.decrypted_secrets where name='worker_secret')
+    ),
+    body := '{}'::jsonb
+  );
+  $$
+);
 
 -- Enqueue embedding jobs whenever content changes (or is inserted).
 create or replace function enqueue_embedding_job()
