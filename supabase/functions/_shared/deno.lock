@@ -2,6 +2,7 @@
   "version": "5",
   "specifiers": {
     "jsr:@panva/jose@^6.1.3": "6.1.3",
+    "jsr:@supabase/functions-js@*": "2.95.3",
     "jsr:@supabase/functions-js@^0.0.0-automated": "0.0.0-jsr-test.1",
     "jsr:@supabase/functions-js@^2.95.3": "2.95.3",
     "jsr:@supabase/supabase-js@^2.95.3": "2.95.3",
@@ -359,6 +360,7 @@
   "workspace": {
     "dependencies": [
       "jsr:@panva/jose@^6.1.3",
+      "jsr:@supabase/functions-js@*",
       "jsr:@supabase/functions-js@^2.95.3",
       "jsr:@supabase/supabase-js@^2.95.3",
       "npm:@ai-sdk/anthropic@^3.0.43",

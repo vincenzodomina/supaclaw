@@ -500,3 +500,75 @@ $$;
 insert into storage.buckets (id, name, public)
 values ('workspace', 'workspace', false)
 on conflict (id) do nothing;
+
+-- ============================================================================
+-- Security posture (recommended hardening)
+-- ============================================================================
+-- This project is intended to be single-user (Telegram bot + Edge Functions).
+-- Supabase exposes SQL functions in exposed schemas (e.g. `public`) as RPC endpoints.
+-- PostgreSQL defaults grant EXECUTE on functions to PUBLIC, which includes `anon` and `authenticated`.
+-- Locking down function EXECUTE prevents abuse (e.g. enqueueing jobs / triggering LLM spend).
+--
+-- References:
+-- - Hardening the Data API: https://supabase.com/docs/guides/database/hardening-data-api
+-- - Securing your API: https://supabase.com/docs/guides/api/securing-your-api
+
+-- Prevent schema-poisoning/search_path attacks: don't let PUBLIC create objects in `public`.
+revoke create on schema public from public;
+
+-- Defense-in-depth for internal queue table:
+-- Even if table grants are accidentally added later, RLS with no policies blocks access for API roles.
+alter table jobs enable row level security;
+
+-- Restrict internal RPCs to backend-only (`service_role`).
+-- These functions are used by Edge Functions + cron and should not be callable via PostgREST.
+revoke execute on function public.enqueue_job(text, text, jsonb, timestamptz, int) from public;
+grant execute on function public.enqueue_job(text, text, jsonb, timestamptz, int) to service_role;
+
+revoke execute on function public.claim_jobs(text, int, int) from public;
+grant execute on function public.claim_jobs(text, int, int) to service_role;
+
+revoke execute on function public.job_succeed(bigint) from public;
+grant execute on function public.job_succeed(bigint) to service_role;
+
+revoke execute on function public.job_fail(bigint, text, int) from public;
+grant execute on function public.job_fail(bigint, text, int) to service_role;
+
+revoke execute on function public.enqueue_embedding_job() from public;
+grant execute on function public.enqueue_embedding_job() to service_role;
+
+revoke execute on function public.hybrid_search(
+  text,
+  extensions.vector(384),
+  int,
+  text[],
+  enum_memory_type[],
+  uuid,
+  enum_message_role[],
+  text,
+  text,
+  float,
+  float,
+  int
+) from public;
+grant execute on function public.hybrid_search(
+  text,
+  extensions.vector(384),
+  int,
+  text[],
+  enum_memory_type[],
+  uuid,
+  enum_message_role[],
+  text,
+  text,
+  float,
+  float,
+  int
+) to service_role;
+
+-- Make future functions private by default (run once as the migration author).
+alter default privileges in schema public revoke execute on functions from public;
+
+-- Example: if you ever want a single safe function callable from client sessions:
+-- revoke execute on function public.some_safe_rpc(...) from public;
+-- grant execute on function public.some_safe_rpc(...) to authenticated;

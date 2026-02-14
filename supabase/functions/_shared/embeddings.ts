@@ -1,4 +1,4 @@
-import { Supabase } from '@supabase/functions-js/edge-runtime.d.ts'
+import 'supabase-edge-runtime'
 
 const session = new Supabase.ai.Session('gte-small')
 

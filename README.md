@@ -49,7 +49,12 @@ cp supabase/.env.example supabase/.env.local
 Run the functions in a local terminal session:
 
 ```bash
-supabase functions serve
+cd supaclaw/supabase/functions/_shared
+deno install
+supabase functions serve \
+  --env-file supabase/.env.local \
+  --import-map supabase/functions/_shared/deno.json \
+  --no-verify-jwt
 ```
 
 ## Step 5: Configure Telegram Webhook
@@ -82,7 +87,7 @@ The worker only calls the LLM when there are due jobs, so this acts as a minimal
 ### Option B: Set Vault secrets via SQL Editor
 
 ```sql
-select vault.create_secret('https://<project-ref>.supabase.co', 'project_url');
+select vault.create_secret('http://127.0.0.1:54323', 'project_url');
 select vault.create_secret('<WORKER_SECRET>', 'worker_secret');
 ```
 
