@@ -1,6 +1,6 @@
 # Deploy SupaClaw
 
-Get SupaClaw running in production in under 10 minutes.
+Get SupaClaw running in the cloud in under 10 minutes.
 
 ## Prerequisites
 
@@ -30,9 +30,6 @@ Get SupaClaw running in production in under 10 minutes.
 supabase login
 supabase projects create supaclaw
 supabase link --project-ref <your-project-id>
-# OR Self hosting locally
-supabase init
-supabase start
 ```
 
 ## Step 2: Initialize Database
@@ -51,26 +48,26 @@ cd supaclaw
 supabase db push --linked
 ```
 
-## Step 4: Configure Environment
+## Step 3: Configure Environment
 
 Copy the template and fill values, see explanation and how to get in [.env.example](supabase/.env.example) file:
 
 ```bash
-cp supabase/.env.example supabase/.env.local
+cp supabase/.env.example supabase/.env
 ```
 
-## Step 5: Deploy Edge Functions
+## Step 4: Deploy Edge Functions
 
 Set secrets and deploy functions:
 
 ```bash
-supabase secrets set --env-file ./supabase/.env.local
-supabase functions deploy --no-verify-jwt telegram-webhook
-supabase functions deploy --no-verify-jwt agent-worker
-supabase functions deploy --no-verify-jwt trigger-webhook
+supabase secrets set --env-file ./supabase/.env
+supabase functions deploy telegram-webhook
+supabase functions deploy agent-worker
+supabase functions deploy trigger-webhook
 ```
 
-## Step 6: Configure Telegram Webhook
+## Step 5: Configure Telegram Webhook
 
 Set Telegram webhook with a secret token (Telegram will send the header `X-Telegram-Bot-Api-Secret-Token` on every request):
 
@@ -85,7 +82,7 @@ curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" 
 
 Docs: [`setWebhook`](https://core.telegram.org/bots/api#setwebhook)
 
-## Step 7: Schedule the Worker (Cron)
+## Step 6: Schedule the Worker (Cron)
 
 The worker only calls the LLM when there are due jobs, so this acts as a minimal “heartbeat”.
 
@@ -113,3 +110,7 @@ select cron.schedule(
   $$
 );
 ```
+
+## Step 7: Hello world!
+
+**That's it.** No daemon setup, no complex config, no VPS, no security headaches.
