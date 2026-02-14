@@ -1,12 +1,15 @@
 # SupaClaw 
 
-A nano version of OpenClaw that's **Supabase-native** and uses Supabase built-in features to minimize setup.
+A nano version of OpenClaw that's **Supabase-native** and uses Supabase built-in features to minimize setup and code to maintain.
 
-***The Core Idea***
+***Why?***
 
-- **Supabase-first**: Store and host everything in Supabase (DB, files, cron)
-- **Minimal setup**: One Supabase project = ready to go
-- **Cloud or Self hosting**: Easy and fast cloud setup, private self hosting later
+Because i love supabase. And because:
+
+- **Supabase-only**: Store and host everything in Supabase (DB, files, cron, API)
+- **Minimal Dependency**: Supabase + LLM Provider (if not self hosting), no other Cloud provider or infrastructure needed
+- **Production ready**: Battle tested & secure tech, not re-inventing the wheel
+- **Cloud & Self hosting**: Easy and fast cloud setup, port to private self hosting later
 
 # Quickstart
 
@@ -102,6 +105,7 @@ select vault.create_secret('<WORKER_SECRET>', 'worker_secret');
 - [ ] WhatsApp channel
 - [ ] Web chat UI
 - [ ] Tools (web/task/search)
+- [ ] Sandbox shell execution
 - [ ] Connectors (calendar, email, etc.)
 
 ## Support
@@ -113,7 +117,7 @@ select vault.create_secret('<WORKER_SECRET>', 'worker_secret');
 Inspired by [OpenClaw](https://github.com/openclaw/openclaw) - amazing project!
 Built with: 
 - [Supabase](https://supabase.com) - Because we love it
-- [Vercel AI SDK](https://ai-sdk.dev/)
+- [Vercel AI SDK](https://ai-sdk.dev/) - Awesome multi provider support
 
 ## License
 
