@@ -49,6 +49,8 @@ This is also great to manually trigger the worker to bypass cron (for debugging)
 
 ```bash
 docker logs -f --tail 200 supabase_edge_runtime_supaclaw
+# Filter just worker events:
+docker logs --tail 500 supabase_edge_runtime_supaclaw 2>&1 | rg '"msg":"worker\.|job\.'
 ```
 
 #### Inspect queue/worker state from DB

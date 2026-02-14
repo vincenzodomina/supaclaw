@@ -2,6 +2,7 @@ import { createServiceClient } from "../_shared/supabase.ts";
 import { mustGetEnv } from "../_shared/env.ts";
 import { jsonResponse, textResponse } from "../_shared/http.ts";
 import { telegramSendMessage } from "../_shared/telegram.ts";
+import { logger } from "../_shared/logger.ts";
 import {
   buildSystemPrompt,
   type ChatMessage,
@@ -36,13 +37,16 @@ function isAuthorized(req: Request) {
 }
 
 async function claimJobs(workerId: string, maxJobs = 3): Promise<JobRow[]> {
+  logger.debug("jobs.claim.start", { workerId, maxJobs });
   const { data, error } = await supabase.rpc("claim_jobs", {
     p_locked_by: workerId,
     p_max_jobs: maxJobs,
     p_lock_timeout_seconds: 300,
   });
   if (error) throw new Error(`claim_jobs failed: ${error.message}`);
-  return (data ?? []) as JobRow[];
+  const jobs = (data ?? []) as JobRow[];
+  logger.info("jobs.claim.done", { workerId, claimed: jobs.length });
+  return jobs;
 }
 
 async function jobSucceed(jobId: number) {
@@ -64,6 +68,7 @@ async function jobFail(
 }
 
 async function processProcessMessage(job: JobRow) {
+  logger.info("job.process_message.start", { jobId: job.id });
   const sessionId = job.payload.session_id as string | undefined;
   const updateId = job.payload.provider_update_id as string | undefined;
   const telegramChatId = job.payload.telegram_chat_id as string | undefined;
@@ -83,6 +88,7 @@ async function processProcessMessage(job: JobRow) {
   if (iErr) throw new Error(`Failed to load inbound message: ${iErr.message}`);
   if (!inbound) {
     // Nothing to do (could be a duplicate update we ignored)
+    logger.info("job.process_message.no_inbound", { jobId: job.id, sessionId, updateId });
     return;
   }
 
@@ -100,6 +106,10 @@ async function processProcessMessage(job: JobRow) {
   }
   if (existingReply) {
     if (existingReply.telegram_sent_at) return;
+    logger.info("job.process_message.redeliver_pending", {
+      jobId: job.id,
+      replyId: existingReply.id,
+    });
 
     const existingChatId =
       existingReply?.telegram_chat_id?.toString()?.trim() || telegramChatId;
@@ -117,6 +127,10 @@ async function processProcessMessage(job: JobRow) {
         `Failed to mark assistant message as delivered: ${deliveredErr.message}`,
       );
     }
+    logger.info("job.process_message.redelivered", {
+      jobId: job.id,
+      replyId: existingReply.id,
+    });
     return;
   }
 
@@ -130,6 +144,10 @@ async function processProcessMessage(job: JobRow) {
   // Memory retrieval in one query (pinned facts + summaries), then split by type.
   // We fetch a slightly larger candidate pool to preserve quality after filtering.
   const queryEmbedding = await embedText(inbound.content);
+  logger.debug("job.process_message.embedding_ready", {
+    jobId: job.id,
+    inboundId: inbound.id,
+  });
   const { data: hybrid, error: memErr } = await supabase.rpc("hybrid_search", {
     query_text: inbound.content,
     query_embedding: queryEmbedding,
@@ -192,6 +210,10 @@ async function processProcessMessage(job: JobRow) {
   ];
 
   const reply = await generateAgentReply({ messages });
+  logger.debug("job.process_message.reply_generated", {
+    jobId: job.id,
+    replyLength: reply.length,
+  });
 
   // Persist assistant message before delivery; retries will deliver pending messages.
   const { data: savedReply, error: saveErr } = await supabase
@@ -223,6 +245,10 @@ async function processProcessMessage(job: JobRow) {
       `Failed to mark assistant message as delivered: ${deliveredErr.message}`,
     );
   }
+  logger.info("job.process_message.done", {
+    jobId: job.id,
+    replyMessageId: savedReply.id,
+  });
 }
 
 function processTrigger(job: JobRow) {
@@ -243,6 +269,7 @@ const EMBED_CONFIG: Partial<Record<JobRow["type"], EmbedConfig>> = {
 };
 
 async function processEmbed(job: JobRow, config: EmbedConfig) {
+  logger.info("job.embed.start", { jobId: job.id, type: job.type, table: config.table });
   const id = job.payload[config.idKey];
   if (!id) throw new Error(`Invalid ${job.type} payload`);
 
@@ -270,6 +297,7 @@ async function processEmbed(job: JobRow, config: EmbedConfig) {
       `Failed to update ${job.type} embedding: ${updateErr.message}`,
     );
   }
+  logger.info("job.embed.done", { jobId: job.id, type: job.type, id });
 }
 
 async function processJob(job: JobRow) {
@@ -287,28 +315,62 @@ Deno.serve(async (req) => {
   if (!isAuthorized(req)) return textResponse("forbidden", { status: 403 });
 
   const workerId = crypto.randomUUID();
+  const startedAt = Date.now();
+  logger.info("worker.request.start", { workerId });
 
   try {
     const jobs = await claimJobs(workerId, 3);
-    if (jobs.length === 0) return jsonResponse({ results: [] });
+    if (jobs.length === 0) {
+      logger.debug("worker.request.no_jobs", { workerId });
+      return jsonResponse({ results: [] });
+    }
 
     const results: Array<{ jobId: number; ok: boolean; error?: string }> = [];
 
     for (const job of jobs) {
+      const jobStartedAt = Date.now();
+      logger.info("worker.job.start", { workerId, jobId: job.id, type: job.type });
       try {
         await processJob(job);
         await jobSucceed(job.id);
         results.push({ jobId: job.id, ok: true });
+        logger.info("worker.job.success", {
+          workerId,
+          jobId: job.id,
+          type: job.type,
+          ms: Date.now() - jobStartedAt,
+        });
       } catch (e) {
         const msg = e instanceof Error ? e.message : JSON.stringify(e);
         await jobFail(job.id, msg, 60);
         results.push({ jobId: job.id, ok: false, error: msg });
+        logger.error("worker.job.failed", {
+          workerId,
+          jobId: job.id,
+          type: job.type,
+          error: e,
+          message: msg,
+          ms: Date.now() - jobStartedAt,
+        });
       }
     }
 
+    logger.info("worker.request.done", {
+      workerId,
+      jobs: results.length,
+      ok: results.filter((r) => r.ok).length,
+      failed: results.filter((r) => !r.ok).length,
+      ms: Date.now() - startedAt,
+    });
     return jsonResponse({ results });
   } catch (e) {
     const msg = e instanceof Error ? e.message : JSON.stringify(e);
+    logger.error("worker.request.error", {
+      workerId,
+      error: e,
+      message: msg,
+      ms: Date.now() - startedAt,
+    });
     return jsonResponse({ error: msg }, { status: 500 });
   }
 });
