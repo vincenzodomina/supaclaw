@@ -134,11 +134,15 @@ async function processProcessMessage(job: JobRow) {
     return;
   }
 
-  const [agents, soul, identity, user] = await Promise.all([
+  const [agents, soul, identity, user, bootstrap, heartbeat, tools, memory] = await Promise.all([
     downloadTextFromWorkspace(".agents/AGENTS.md"),
     downloadTextFromWorkspace(".agents/SOUL.md"),
     downloadTextFromWorkspace(".agents/IDENTITY.md"),
     downloadTextFromWorkspace(".agents/USER.md"),
+    downloadTextFromWorkspace(".agents/BOOTSTRAP.md"),
+    downloadTextFromWorkspace(".agents/HEARTBEAT.md"),
+    downloadTextFromWorkspace(".agents/TOOLS.md"),
+    downloadTextFromWorkspace(".agents/MEMORY.md"),
   ]);
 
   // Memory retrieval in one query (pinned facts + summaries), then split by type.
@@ -186,6 +190,10 @@ async function processProcessMessage(job: JobRow) {
     soul: soul ?? undefined,
     identity: identity ?? undefined,
     user: user ?? undefined,
+    bootstrap: bootstrap ?? undefined,
+    heartbeat: heartbeat ?? undefined,
+    tools: tools ?? undefined,
+    memory: memory ?? undefined,
     memories: memoryStrings,
   });
 
