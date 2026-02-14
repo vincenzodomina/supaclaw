@@ -53,24 +53,11 @@ supabase db push --linked
 
 ## Step 4: Configure Environment
 
-Copy the template and fill in values:
+Copy the template and fill values, see explanation and how to get in [.env.example](supabase/.env.example) file:
 
 ```bash
 cp supabase/.env.example supabase/.env.local
 ```
-
-At minimum, set:
-
-- `SUPABASE_URL`              (get from terminal output when started supabase, or from cloud dashboard)
-- `SUPABASE_SERVICE_ROLE_KEY` (same)
-- `TELEGRAM_BOT_TOKEN`        (get inside Telegram from Botfather when creating bot)
-- `TELEGRAM_WEBHOOK_SECRET`   (create yourself, make it strong. e.g. with `openssl rand -hex 32`)
-- `TELEGRAM_ALLOWED_USER_ID`  (get from telegram)
-- `WORKER_SECRET`             (create yourself) 
-- `TRIGGER_WEBHOOK_SECRET`    (create yourself) 
-- One LLM provider:
-  - `OPENAI_API_KEY` (and optionally `OPENAI_MODEL`, get from https://platform.openai.com)
-  - OR `ANTHROPIC_API_KEY` (and optionally `ANTHROPIC_MODEL`, get from https://claude.ai)
 
 ## Step 5: Deploy Edge Functions
 
