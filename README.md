@@ -53,10 +53,9 @@ At minimum, set:
 
 ## Step 5: Deploy Edge Functions
 
-Deploy functions and set secrets:
+Set secrets and deploy functions:
 
 ```bash
-supabase secrets set --env-file ./supabase/.env.local
 supabase functions deploy --no-verify-jwt telegram-webhook
 supabase functions deploy --no-verify-jwt agent-worker
 supabase functions deploy --no-verify-jwt trigger-webhook
