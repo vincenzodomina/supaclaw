@@ -87,7 +87,8 @@ The worker only calls the LLM when there are due jobs, so this acts as a minimal
 ### Option B: Set Vault secrets via SQL Editor
 
 ```sql
-select vault.create_secret('http://127.0.0.1:54323', 'project_url');
+---note the docker host. That hostname is reachable from Docker on macOS.
+select vault.create_secret('http://host.docker.internal:54321', 'project_url'); 
 select vault.create_secret('<WORKER_SECRET>', 'worker_secret');
 select vault.create_secret('<SUPABASE_SERVICE_ROLE_KEY>', 'service_role_key');
 ```
