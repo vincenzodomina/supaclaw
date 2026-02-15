@@ -36,6 +36,7 @@ In a nutshell this script actively runs:
 supabase start
 supabase db push --local
 ngrok http 54321
+supabase storage cp (agent files)
 select vault.create_secret(...)
 curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook"
 supabase functions serve
@@ -69,7 +70,7 @@ For a detailed walkthrough documentation (for local or cloud deployment) look at
 
 ## Contributions
 
-Are welcome! Fork it, tweak it, PR it!
+Are welcome! Fork it, tweak it, PR it, repeat!
 
 ## Credits
 
@@ -84,4 +85,4 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ---
 
-**SupaClaw**: Less is more. Keep it yours. 🦀
+**SupaClaw**: Keep it yours. 🦀
