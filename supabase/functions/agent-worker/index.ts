@@ -105,6 +105,7 @@ async function processProcessMessage(job: JobRow) {
     .select("id, content, telegram_chat_id, telegram_sent_at")
     .eq("reply_to_message_id", inbound.id)
     .eq("role", "assistant")
+    .eq("type", "text")
     .maybeSingle();
   if (rErr) {
     throw new Error(`Failed to check existing replies: ${rErr.message}`);
@@ -180,6 +181,7 @@ async function processProcessMessage(job: JobRow) {
       session_id: sessionId,
       reply_to_message_id: inbound.id,
       role: "assistant",
+      type: "text",
       content: reply,
       provider: "telegram",
       telegram_chat_id: telegramChatId,
@@ -298,6 +300,8 @@ async function buildAssistantReply(params: {
     .from("messages")
     .select("role, content")
     .eq("session_id", params.sessionId)
+    .eq("type", "text")
+    .in("role", ["user", "assistant"])
     .order("created_at", { ascending: false })
     .limit(20);
   if (recentErr) {

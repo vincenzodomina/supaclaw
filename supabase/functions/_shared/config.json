@@ -1,0 +1,9 @@
+{
+  "agent.max_steps": 30,
+  "llms.agent.model": "gpt-5.2",
+  "llms.agent.provider": "openai",
+  "llms.embedding.model": "gte-small",
+  "llms.embedding.provider": "supabase",
+  "channels.telegram.enabled": true,
+  "channels.telegram.show_tool_calls": true
+}

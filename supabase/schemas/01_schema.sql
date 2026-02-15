@@ -10,6 +10,8 @@ create extension if not exists supabase_vault cascade;
 -- Enums
 create type enum_session_channel as enum ('telegram', 'slack', 'whatsapp', 'discord', 'imessage', 'phone', 'email', 'web', 'mobile', 'desktop', 'api');
 create type enum_message_role as enum ('assistant', 'user', 'system');
+create type enum_message_type as enum ('text', 'tool-call', 'file');
+create type enum_message_tool_status as enum ('started', 'succeeded', 'failed');
 create type enum_memory_type as enum ('summary', 'pinned_fact');
 create type enum_job_type as enum ('process_message', 'embed_memory', 'embed_message', 'embed_file', 'trigger');
 
@@ -64,6 +66,11 @@ create table if not exists messages (
   telegram_chat_id text,
   telegram_from_user_id text,
   telegram_sent_at timestamptz,
+  type enum_message_type not null,
+  tool_name text,
+  tool_status enum_message_tool_status,
+  tool_error text,
+  tool_duration_ms int,
   file_id uuid references files(id),
   raw jsonb not null default '{}'::jsonb,
   updated_at timestamptz not null default now(),
@@ -252,7 +259,7 @@ select cron.schedule(
 );
 
 -- Enqueue embedding jobs whenever content changes (or is inserted).
-create or replace function enqueue_embedding_job()
+create or replace function public.enqueue_embedding_job()
 returns trigger
 language plpgsql
 as $$
@@ -262,8 +269,15 @@ declare
   v_job_type text := tg_argv[1];
   v_payload_key text := tg_argv[2];
 begin
+  -- For message timeline rows: only embed actual text messages.
+  if v_key_prefix = 'message' then
+    if coalesce(new.type, 'text') <> 'text' then
+      return new;
+    end if;
+  end if;
+
   v_key := v_key_prefix || ':embed:' || new.id::text;
-  perform enqueue_job(
+  perform public.enqueue_job(
     p_dedupe_key => v_key,
     p_type => v_job_type,
     p_payload => jsonb_build_object(v_payload_key, new.id),

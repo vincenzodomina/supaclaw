@@ -4,8 +4,12 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { workspaceTools } from "./workspace_tools.ts";
 import { skillsTools, buildSkillsInstructionsBlock } from "./skills.ts";
+import { getConfigNumber } from "./helpers.ts";
+import { logger } from "./logger.ts";
 
 export type LLMProvider = "openai" | "anthropic" | "google";
+
+type ToolSet = Parameters<typeof generateText>[0]["tools"];
 
 export type ChatMessage = {
   role: "system" | "user" | "assistant";
@@ -47,23 +51,28 @@ export async function generateAgentReply({
   messages,
   provider = "openai",
   model,
-  maxSteps,
+  maxSteps = getConfigNumber("agent.max_steps") ?? 5,
+  tools,
 }: {
   messages: ChatMessage[];
   provider?: LLMProvider;
   model?: string;
   maxSteps?: number;
+  tools?: ToolSet;
 }): Promise<string> {
   const providerModel = resolveProviderModel(provider, model);
 
-  const { text } = await generateText({
+  const result = await generateText({
     model: providerModel,
     messages,
-    tools: { ...workspaceTools, ...skillsTools },
+    tools: tools ?? { ...workspaceTools, ...skillsTools },
     ...(provider !== "openai" ? { maxOutputTokens: 800 } : {}),
     ...(maxSteps ? { maxSteps } : {}),
   });
-  return text?.trim() || "";
+
+  logger.debug("llm.generateAgentReply", { result });
+
+  return result.text?.trim() ?? result.toolCalls?.map((toolCall) => `${toolCall.toolName}`).join("\n");
 }
 
 export async function buildSystemPrompt(params: {

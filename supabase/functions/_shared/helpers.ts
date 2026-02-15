@@ -1,4 +1,40 @@
 import * as jose from "@panva/jose";
+import rawConfig from "./config.json" with { type: "json" };
+
+// Single source of truth: infer keys/types directly from config.json.
+export type AppConfig = typeof rawConfig;
+export type AppConfigKey = keyof AppConfig;
+
+/** Tiny typed proxy over flat dotted-key config entries. */
+export const appConfig = new Proxy(rawConfig as AppConfig, {
+  get(target, prop) {
+    if (typeof prop !== "string") return undefined;
+    return target[prop as AppConfigKey];
+  },
+});
+
+export function getConfig<K extends AppConfigKey>(key: K): AppConfig[K];
+export function getConfig<T = unknown>(
+  key: string,
+): T | undefined;
+export function getConfig(key: string) {
+  return (rawConfig as Record<string, unknown>)[key];
+}
+
+export function getConfigNumber(key: string): number | undefined {
+  const value = getConfig(key);
+  return typeof value === "number" ? value : undefined;
+}
+
+export function getConfigString(key: string): string | undefined {
+  const value = getConfig(key);
+  return typeof value === "string" ? value : undefined;
+}
+
+export function getConfigBoolean(key: string): boolean | undefined {
+  const value = getConfig(key);
+  return typeof value === "boolean" ? value : undefined;
+}
 
 export function mustGetEnv(name: string): string {
   const value = Deno.env.get(name);

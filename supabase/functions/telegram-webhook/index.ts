@@ -84,6 +84,7 @@ Deno.serve(async (req) => {
   const { error: mErr } = await supabase.from('messages').insert({
     session_id: sessionId,
     role: 'user',
+    type: 'text',
     content,
     provider: 'telegram',
     provider_update_id: updateId,
