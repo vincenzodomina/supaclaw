@@ -86,10 +86,6 @@ create unique index if not exists messages_provider_update_id_uniq
 create index if not exists messages_session_created_idx
   on messages (session_id, created_at desc);
 
-create unique index if not exists messages_unique_assistant_reply_idx
-  on messages (reply_to_message_id)
-  where role = 'assistant' and reply_to_message_id is not null;
-
 create index if not exists messages_fts_idx on messages using gin(fts);
 create index if not exists messages_embedding_idx on messages using hnsw (embedding vector_ip_ops);
 
