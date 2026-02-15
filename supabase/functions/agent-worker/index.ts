@@ -1,6 +1,5 @@
 import { createServiceClient } from "../_shared/supabase.ts";
-import { mustGetEnv } from "../_shared/env.ts";
-import { jsonResponse, textResponse } from "../_shared/http.ts";
+import { mustGetEnv, timingSafeEqual, jsonResponse, textResponse } from "../_shared/helpers.ts";
 import { telegramSendMessage } from "../_shared/telegram.ts";
 import { logger } from "../_shared/logger.ts";
 import {
@@ -34,8 +33,8 @@ const FALLBACK_REPLY =
 
 function isAuthorized(req: Request) {
   const expected = mustGetEnv("WORKER_SECRET");
-  const actual = req.headers.get("x-worker-secret");
-  return actual === expected;
+  const actual = req.headers.get("x-worker-secret") ?? "";
+  return timingSafeEqual(expected, actual);
 }
 
 async function claimJobs(workerId: string, maxJobs = 3): Promise<JobRow[]> {
@@ -153,9 +152,12 @@ async function processProcessMessage(job: JobRow) {
       .update({ telegram_sent_at: new Date().toISOString() })
       .eq("id", existingReply.id);
     if (deliveredErr) {
-      throw new Error(
-        `Failed to mark assistant message as delivered: ${deliveredErr.message}`,
-      );
+      // Warn-only: message was already sent; throwing would cause a retry and duplicate delivery.
+      logger.warn("job.process_message.mark_delivered_failed", {
+        jobId: job.id,
+        replyId: existingReply.id,
+        error: deliveredErr,
+      });
     }
     logger.info("job.process_message.redelivered", {
       jobId: job.id,
@@ -197,9 +199,12 @@ async function processProcessMessage(job: JobRow) {
     .update({ telegram_sent_at: new Date().toISOString() })
     .eq("id", savedReply.id);
   if (deliveredErr) {
-    throw new Error(
-      `Failed to mark assistant message as delivered: ${deliveredErr.message}`,
-    );
+    // Warn-only: message was already sent; throwing would cause a retry and duplicate delivery.
+    logger.warn("job.process_message.mark_delivered_failed", {
+      jobId: job.id,
+      replyId: savedReply.id,
+      error: deliveredErr,
+    });
   }
   logger.info("job.process_message.done", {
     jobId: job.id,

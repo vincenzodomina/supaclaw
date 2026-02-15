@@ -1,4 +1,4 @@
-import { mustGetEnv } from './env.ts'
+import { mustGetEnv } from './helpers.ts'
 
 const MAX_RETRIES = 5
 const BASE_BACKOFF_MS = 500
@@ -73,5 +73,6 @@ export async function telegramSendMessage(params: { chatId: string; text: string
     }
     await sleep(retryAfterMs ?? getBackoffMs(attempt))
   }
+  throw new Error(`telegramSendMessage: exhausted ${MAX_RETRIES} retries`)
 }
 

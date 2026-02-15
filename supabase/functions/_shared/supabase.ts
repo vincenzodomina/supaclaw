@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
-import { mustGetEnv } from './env.ts'
+import { mustGetEnv } from './helpers.ts'
 
 export function createServiceClient() {
   const url = mustGetEnv('SUPABASE_URL')

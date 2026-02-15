@@ -1,6 +1,5 @@
 import { createServiceClient } from '../_shared/supabase.ts'
-import { mustGetEnv } from '../_shared/env.ts'
-import { jsonResponse, textResponse } from '../_shared/http.ts'
+import { mustGetEnv, timingSafeEqual, jsonResponse, textResponse } from '../_shared/helpers.ts'
 
 type TelegramUpdate = {
   update_id: number | string
@@ -20,8 +19,8 @@ type TelegramMessage = {
 
 function verifyTelegramSecret(req: Request) {
   const expected = mustGetEnv('TELEGRAM_WEBHOOK_SECRET')
-  const actual = req.headers.get('x-telegram-bot-api-secret-token')
-  return actual === expected
+  const actual = req.headers.get('x-telegram-bot-api-secret-token') ?? ''
+  return timingSafeEqual(expected, actual)
 }
 
 function isAllowedUser(message: TelegramMessage): boolean {

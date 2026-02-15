@@ -84,13 +84,6 @@ export const logger = {
     writeLog('info', message, meta),
   warn: (message: string, meta?: Record<string, unknown>) =>
     writeLog('warn', message, meta),
-  error: (
-    message: string,
-    meta?: Record<string, unknown> & { error?: unknown },
-  ) =>
-    writeLog(
-      'error',
-      message,
-      meta?.error ? { ...meta, error: serializeError(meta.error) } : (meta ?? {}),
-    ),
+  error: (message: string, meta?: Record<string, unknown>) =>
+    writeLog('error', message, meta),
 }
