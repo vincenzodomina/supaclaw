@@ -48,7 +48,18 @@ cd supaclaw
 supabase db push --linked
 ```
 
-## Step 3: Configure Environment
+## Step 3: Seed `.agents` files (manual)
+
+Use the helper script to seed `workspace/.agents` into the workspace bucket:
+
+```bash
+bash ./scripts/seed-agents-storage.sh --env-file supabase/.env --source-dir workspace/.agents
+```
+
+Note: this uses the Storage HTTP API (`curl`) as a temporary workaround because
+`supabase storage` CLI currently has unstable auth behavior in some setups. Revisit later.
+
+## Step 4: Configure Environment
 
 Copy the template and fill values, see explanation and how to get in [.env.example](supabase/.env.example) file:
 
@@ -56,7 +67,7 @@ Copy the template and fill values, see explanation and how to get in [.env.examp
 cp supabase/.env.example supabase/.env
 ```
 
-## Step 4: Deploy Edge Functions
+## Step 5: Deploy Edge Functions
 
 Set secrets and deploy functions:
 
@@ -67,7 +78,7 @@ supabase functions deploy agent-worker
 supabase functions deploy trigger-webhook
 ```
 
-## Step 5: Configure Telegram Webhook
+## Step 6: Configure Telegram Webhook
 
 Set Telegram webhook with a secret token (Telegram will send the header `X-Telegram-Bot-Api-Secret-Token` on every request):
 
@@ -82,7 +93,7 @@ curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" 
 
 Docs: [`setWebhook`](https://core.telegram.org/bots/api#setwebhook)
 
-## Step 6: Set Vault secrets for scheduled cron worker
+## Step 7: Set Vault secrets for scheduled cron worker
 
 The worker only calls the LLM when there are due jobs, so this acts as a minimal “heartbeat”.
 
@@ -100,7 +111,7 @@ select vault.create_secret('<WORKER_SECRET>', 'worker_secret');
 select vault.create_secret('<SUPABASE_SERVICE_ROLE_KEY>', 'service_role_key');
 ```
 
-## Step 7: Hello world!
+## Step 8: Hello world!
 
 **That's it.** No daemon setup, no complex config, no VPS, no security headaches.
 
@@ -138,7 +149,18 @@ This will migrate and seed the database schema to the running Postgres instance 
 supabase db push --local
 ```
 
-## Step 3: Configure Environment
+## Step 3: Seed `.agents` files (manual)
+
+Use the helper script to seed `workspace/.agents` into the local workspace bucket:
+
+```bash
+bash ./scripts/seed-agents-storage.sh --env-file supabase/.env.local --source-dir workspace/.agents
+```
+
+Note: this uses the Storage HTTP API (`curl`) as a temporary workaround because
+`supabase storage` CLI currently has unstable auth behavior in some setups. Revisit later.
+
+## Step 4: Configure Environment
 
 Copy the template and fill values, see explanation and how to get in [.env.example](supabase/.env.example) file:
 
@@ -146,7 +168,7 @@ Copy the template and fill values, see explanation and how to get in [.env.examp
 cp supabase/.env.example supabase/.env.local
 ```
 
-## Step 4: Run Edge Functions
+## Step 5: Run Edge Functions
 
 Run the functions in a local terminal session:
 
@@ -159,7 +181,7 @@ supabase functions serve \
   --no-verify-jwt
 ```
 
-## Step 5: Configure Telegram Webhook
+## Step 6: Configure Telegram Webhook
 
 Telegram requires a public HTTPS URL for webhooks. If you run Supabase locally in Docker, expose your local Supabase API (`http://127.0.0.1:54321`) via a tunnel and set the webhook URL to that tunnel.
 
@@ -176,7 +198,7 @@ The script will:
 Requirements:
 - `ngrok` account + cli installed and authenticated (`brew install ngrok && ngrok config add-authtoken <token>`)
 
-## Step 6: Set Vault secrets for scheduled cron worker
+## Step 7: Set Vault secrets for scheduled cron worker
 
 The worker only calls the LLM when there are due jobs, so this acts as a minimal “heartbeat”.
 
@@ -195,6 +217,6 @@ select vault.create_secret('<WORKER_SECRET>', 'worker_secret');
 select vault.create_secret('<SUPABASE_SERVICE_ROLE_KEY>', 'service_role_key');
 ```
 
-## Step 7: Hello world!
+## Step 8: Hello world!
 
 **That's it.** No daemon setup, no complex config, no VPS, no security headaches.

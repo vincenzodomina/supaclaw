@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -euo pipefail
 
 # Shared ngrok helper for local SupaClaw scripts.
 # Can be sourced by other scripts, or executed directly.

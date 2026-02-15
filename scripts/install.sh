@@ -8,10 +8,11 @@ set -euo pipefail
 # 2) Starts local Supabase services with Docker.
 # 3) Pushes local database schema/migrations.
 # 4) Creates/updates supabase/.env.local interactively.
-# 5) Installs Deno dependencies for edge functions.
-# 6) Optionally configures Supabase Vault secrets from supabase/.env.local.
-# 7) Optionally configures Telegram webhook via ngrok helper.
-# 8) Optionally starts local edge functions server (blocking command).
+# 5) Seeds workspace/.agents files into Supabase Storage.
+# 6) Installs Deno dependencies for edge functions.
+# 7) Optionally configures Supabase Vault secrets from supabase/.env.local.
+# 8) Optionally configures Telegram webhook via ngrok helper.
+# 9) Optionally starts local edge functions server (blocking command).
 #
 # Usage:
 #   ./scripts/install.sh
@@ -23,9 +24,14 @@ ENV_LOCAL="${REPO_ROOT}/supabase/.env.local"
 VAULT_SCRIPT="${REPO_ROOT}/scripts/deploy-local-vault-secrets.sh"
 WEBHOOK_SCRIPT="${REPO_ROOT}/scripts/set-local-telegram-webhook.sh"
 NGROK_HELPER="${REPO_ROOT}/scripts/ngrok-helper.sh"
+AGENTS_SEED_SCRIPT="${REPO_ROOT}/scripts/seed-agents-storage.sh"
 
 if [[ ! -f "${NGROK_HELPER}" ]]; then
   printf "[install][error] Missing ngrok helper script: %s\n" "${NGROK_HELPER}" >&2
+  exit 1
+fi
+if [[ ! -f "${AGENTS_SEED_SCRIPT}" ]]; then
+  printf "[install][error] Missing agents seed script: %s\n" "${AGENTS_SEED_SCRIPT}" >&2
   exit 1
 fi
 
@@ -169,7 +175,7 @@ prompt_env_var() {
 
 cd "${REPO_ROOT}"
 
-log "Step 1/8 - Checking prerequisites"
+log "Step 1/9 - Checking prerequisites"
 command_exists supabase || die "Supabase CLI not found. Install with: brew install supabase/tap/supabase"
 command_exists docker || die "Docker CLI not found. Install Docker Desktop and ensure it is running."
 command_exists python3 || die "python3 not found."
@@ -211,7 +217,7 @@ else
   hint "ngrok HTTPS tunnel: not detected"
 fi
 
-log "Step 2/8 - Starting Supabase local services"
+log "Step 2/9 - Starting Supabase local services"
 if [[ "${SUPABASE_ALREADY_RUNNING}" == "true" ]]; then
   if ask_yes_no "Supabase appears already running. Run 'supabase start' again?" "n"; then
     supabase start
@@ -226,10 +232,10 @@ else
   fi
 fi
 
-log "Step 3/8 - Pushing database schema/migrations to local DB"
+log "Step 3/9 - Pushing database schema/migrations to local DB"
 supabase db push --local
 
-log "Step 4/8 - Configuring supabase/.env.local interactively"
+log "Step 4/9 - Configuring supabase/.env.local interactively"
 if [[ ! -f "${ENV_EXAMPLE}" ]]; then
   die "Missing ${ENV_EXAMPLE}"
 fi
@@ -258,10 +264,18 @@ if ask_yes_no "Configure Anthropic provider variables now?" "n"; then
   prompt_env_var "ANTHROPIC_MODEL" "Anthropic model id." "true" "false" "claude-3-5-sonnet-latest"
 fi
 
-log "Step 5/8 - Installing Deno dependencies for edge functions"
+log "Step 5/9 - Seeding workspace .agents files to Supabase Storage"
+WORKSPACE_BUCKET_VALUE="$(get_env_value "WORKSPACE_BUCKET")"
+WORKSPACE_BUCKET_VALUE="${WORKSPACE_BUCKET_VALUE:-workspace}"
+bash "${AGENTS_SEED_SCRIPT}" \
+  --env-file "${ENV_LOCAL}" \
+  --source-dir "${REPO_ROOT}/workspace/.agents" \
+  --workspace-bucket "${WORKSPACE_BUCKET_VALUE}"
+
+log "Step 6/9 - Installing Deno dependencies for edge functions"
 (cd "${REPO_ROOT}/supabase/functions/_shared" && deno install)
 
-log "Step 6/8 - Optional: Deploy local Vault secrets"
+log "Step 7/9 - Optional: Deploy local Vault secrets"
 if [[ -x "${VAULT_SCRIPT}" ]]; then
   if ask_yes_no "Run Vault secret deployment now?" "y"; then
     "${VAULT_SCRIPT}"
@@ -270,7 +284,7 @@ else
   warn "Vault script is missing or not executable: ${VAULT_SCRIPT}"
 fi
 
-log "Step 7/8 - Optional: Configure Telegram webhook (ngrok)"
+log "Step 8/9 - Optional: Configure Telegram webhook (ngrok)"
 if [[ -x "${WEBHOOK_SCRIPT}" ]]; then
   webhook_default="n"
   webhook_prompt="Run Telegram webhook helper now?"
@@ -284,7 +298,7 @@ else
   warn "Webhook helper script is missing or not executable: ${WEBHOOK_SCRIPT}"
 fi
 
-log "Step 8/8 - Optional: Start local edge functions server"
+log "Step 9/9 - Optional: Start local edge functions server"
 functions_default="y"
 functions_prompt="Start supabase functions serve now? (This will keep this terminal occupied)"
 if [[ "${FUNCTIONS_ALREADY_RUNNING}" == "true" ]]; then

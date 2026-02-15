@@ -12,6 +12,10 @@ Use the install.sh script to walk interactively through all steps, it discovers 
 bash ./scripts/install.sh
 ```
 
+### Check local stack
+
+Check local stack with: `supabase status`
+
 #### Verify Ngrok
 
 ```bash
