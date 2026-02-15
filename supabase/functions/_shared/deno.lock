@@ -7,6 +7,7 @@
     "jsr:@supabase/functions-js@^2.95.3": "2.95.3",
     "jsr:@supabase/supabase-js@^2.95.3": "2.95.3",
     "npm:@ai-sdk/anthropic@^3.0.43": "3.0.43_zod@4.3.6",
+    "npm:@ai-sdk/google@^3.0.29": "3.0.29_zod@4.3.6",
     "npm:@ai-sdk/openai@^3.0.28": "3.0.28_zod@4.3.6",
     "npm:@supabase/auth-js@2.95.3": "2.95.3",
     "npm:@supabase/postgrest-js@2.95.3": "2.95.3",
@@ -54,6 +55,14 @@
         "@ai-sdk/provider",
         "@ai-sdk/provider-utils",
         "@vercel/oidc",
+        "zod"
+      ]
+    },
+    "@ai-sdk/google@3.0.29_zod@4.3.6": {
+      "integrity": "sha512-x0hcU10AA+i1ZUQHloGD5qXWsB+Y8qnxlmFUef6Ly4rB53MGVbQExkI9nOKiCO3mu2TGiiNoQMeKWSeQVLfRUA==",
+      "dependencies": [
+        "@ai-sdk/provider",
+        "@ai-sdk/provider-utils",
         "zod"
       ]
     },
@@ -364,6 +373,7 @@
       "jsr:@supabase/functions-js@^2.95.3",
       "jsr:@supabase/supabase-js@^2.95.3",
       "npm:@ai-sdk/anthropic@^3.0.43",
+      "npm:@ai-sdk/google@^3.0.29",
       "npm:@ai-sdk/openai@^3.0.28",
       "npm:ai@^6.0.85"
     ]

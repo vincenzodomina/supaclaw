@@ -47,7 +47,7 @@ For a detailed walkthrough documentation (for local or cloud deployment) look at
 
 ## Roadmap
 
-### Current (v0.1.0)
+### Done (v0.1.0)
 - ✅ Core architecture
 - ✅ Supabase integration (schema + jobs)
 - ✅ Telegram webhook + worker
@@ -55,17 +55,21 @@ For a detailed walkthrough documentation (for local or cloud deployment) look at
 - ✅ Tools (read/write/list/edit)
 - ✅ Skills
 
-### Planned (v0.2.0)
-- [ ] Slack channel
-- [ ] WhatsApp channel
-- [ ] Web chat UI
-- [ ] Tools (web/task/search)
+### Missing (v0.2.0)
+- [ ] More channels (Slack, Whatsapp, ..)
+- [ ] More tools (web/task/search)
 - [ ] Sandbox shell execution
+- [ ] Self access via Github
 - [ ] Connectors (calendar, email, etc.)
+- [ ] Web chat UI
 
 ## Support
 
 - **Issues**: [GitHub Issues](https://github.com/vincenzodomina/supaclaw/issues)
+
+## Contributions
+
+Are welcome! Fork it, tweak it, PR it!
 
 ## Credits
 
