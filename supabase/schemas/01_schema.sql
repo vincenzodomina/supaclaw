@@ -67,12 +67,12 @@ create table if not exists messages (
   telegram_from_user_id text,
   telegram_sent_at timestamptz,
   type enum_message_type not null,
-  tool_name text,
-  tool_status enum_message_tool_status,
-  tool_error text,
   tool_duration_ms int,
+  tool_error text,
+  tool_name text,
+  tool_result jsonb,
+  tool_status enum_message_tool_status,
   file_id uuid references files(id),
-  raw jsonb not null default '{}'::jsonb,
   updated_at timestamptz not null default now(),
   created_at timestamptz not null default now()
 );
