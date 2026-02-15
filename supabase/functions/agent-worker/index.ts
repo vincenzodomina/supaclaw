@@ -1,10 +1,11 @@
 import { createServiceClient } from "../_shared/supabase.ts";
-import { mustGetEnv, timingSafeEqual, jsonResponse, textResponse } from "../_shared/helpers.ts";
-import { telegramSendMessage } from "../_shared/telegram.ts";
+import { mustGetEnv, timingSafeEqual, getConfigBoolean, jsonResponse, textResponse } from "../_shared/helpers.ts";
+import { telegramSendMessage, telegramEditMessageText } from "../_shared/telegram.ts";
 import { logger } from "../_shared/logger.ts";
 import {
   buildSystemPrompt,
   type ChatMessage,
+  type ToolStreamEvent,
   generateAgentReply,
 } from "../_shared/llm.ts";
 import { downloadTextFromWorkspace } from "../_shared/storage.ts";
@@ -100,16 +101,18 @@ async function processProcessMessage(job: JobRow) {
   // Idempotency + retry-safe delivery:
   // - If an assistant row already exists and was delivered, do nothing.
   // - If it exists but wasn't delivered yet, deliver now and mark sent.
-  const { data: existingReply, error: rErr } = await supabase
+  const { data: existingReplies, error: rErr } = await supabase
     .from("messages")
     .select("id, content, telegram_chat_id, telegram_sent_at")
     .eq("reply_to_message_id", inbound.id)
     .eq("role", "assistant")
     .eq("type", "text")
-    .maybeSingle();
+    .order("created_at", { ascending: false })
+    .limit(1);
   if (rErr) {
     throw new Error(`Failed to check existing replies: ${rErr.message}`);
   }
+  const existingReply = existingReplies?.[0] ?? null;
   if (existingReply) {
     if (existingReply.telegram_sent_at) return;
     logger.info("job.process_message.redeliver_pending", {
@@ -131,6 +134,7 @@ async function processProcessMessage(job: JobRow) {
         sessionId,
         inboundId: inbound.id,
         inboundContent: inbound.content,
+        telegramChatId,
       });
       const { error: repairErr } = await supabase
         .from("messages")
@@ -172,6 +176,7 @@ async function processProcessMessage(job: JobRow) {
     sessionId,
     inboundId: inbound.id,
     inboundContent: inbound.content,
+    telegramChatId,
   });
 
   // Persist assistant message before delivery; retries will deliver pending messages.
@@ -186,7 +191,6 @@ async function processProcessMessage(job: JobRow) {
       provider: "telegram",
       telegram_chat_id: telegramChatId,
       telegram_sent_at: null,
-      raw: {},
     })
     .select("id")
     .single();
@@ -219,6 +223,7 @@ async function buildAssistantReply(params: {
   sessionId: string;
   inboundId: number;
   inboundContent: string;
+  telegramChatId: string;
 }) {
   const [agents, soul, identity, user, bootstrap, heartbeat, tools, memory] =
     await Promise.all([
@@ -316,7 +321,89 @@ async function buildAssistantReply(params: {
     })),
   ];
 
-  const rawReply = await generateAgentReply({ messages });
+  // Tool-call stream handler: persist each tool call as a timeline row + optional Telegram rendering
+  const showToolCalls = getConfigBoolean("channels.telegram.show_tool_calls") === true;
+  let toolSeq = 0;
+  const toolState = new Map<string, { rowId: number; tgMsgId?: string; toolName: string; startedAt: number }>();
+
+  const onToolEvent = async (event: ToolStreamEvent) => {
+    if (event.type === "tool-call-start") {
+      toolSeq++;
+      const { data, error } = await supabase.from("messages").insert({
+        session_id: params.sessionId,
+        reply_to_message_id: params.inboundId,
+        role: "system",
+        type: "tool-call",
+        content: JSON.stringify(event.args),
+        tool_name: event.toolName,
+        tool_status: "started",
+        provider: "telegram",
+        provider_update_id: `tool:${params.inboundId}:${toolSeq}`,
+        telegram_chat_id: params.telegramChatId,
+      }).select("id").single();
+
+      if (error) {
+        logger.warn("tool-call.insert_failed", { error: error.message });
+        return;
+      }
+
+      let tgMsgId: string | undefined;
+      if (showToolCalls) {
+        try {
+          tgMsgId = await telegramSendMessage({
+            chatId: params.telegramChatId,
+            text: `${event.toolName} — started`,
+          });
+          if (tgMsgId) {
+            await supabase.from("messages")
+              .update({ telegram_message_id: tgMsgId, telegram_sent_at: new Date().toISOString() })
+              .eq("id", data.id);
+          }
+        } catch (e) {
+          logger.warn("tool-call.telegram_send_failed", { error: e });
+        }
+      }
+
+      toolState.set(event.toolCallId, { rowId: data.id, toolName: event.toolName, startedAt: Date.now(), tgMsgId });
+    } else {
+      const state = toolState.get(event.toolCallId);
+      if (!state) return;
+
+      await supabase.from("messages").update({
+        tool_status: "succeeded",
+        tool_result: event.result ?? null,
+        tool_duration_ms: Date.now() - state.startedAt,
+      }).eq("id", state.rowId);
+
+      if (showToolCalls && state.tgMsgId) {
+        await telegramEditMessageText({
+          chatId: params.telegramChatId,
+          messageId: state.tgMsgId,
+          text: `${event.toolName} — succeeded`,
+        }).catch((e: unknown) => logger.warn("tool-call.telegram_edit_failed", { error: e }));
+      }
+    }
+  };
+
+  let rawReply: string;
+  try {
+    rawReply = await generateAgentReply({ messages, onToolEvent });
+  } catch (err) {
+    // Mark any pending tool calls as failed
+    const errMsg = err instanceof Error ? err.message : String(err);
+    for (const [, s] of toolState) {
+      await supabase.from("messages")
+        .update({ tool_status: "failed", tool_error: errMsg, tool_duration_ms: Date.now() - s.startedAt })
+        .eq("id", s.rowId).eq("tool_status", "started");
+      if (showToolCalls && s.tgMsgId) {
+        telegramEditMessageText({
+          chatId: params.telegramChatId, messageId: s.tgMsgId, text: `${s.toolName} — failed`,
+        }).catch(() => {});
+      }
+    }
+    throw err;
+  }
+
   const reply = rawReply.trim();
   if (!reply) {
     logger.warn("job.process_message.reply_empty", {

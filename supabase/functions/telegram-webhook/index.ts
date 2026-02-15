@@ -91,7 +91,6 @@ Deno.serve(async (req) => {
     telegram_message_id: messageId,
     telegram_chat_id: chatId,
     telegram_from_user_id: fromUserId,
-    raw: update,
   })
 
   // If we hit a unique violation (duplicate update), we can safely continue.

@@ -22,22 +22,13 @@ function getBackoffMs(attempt: number): number {
   return exponential + jitter
 }
 
-export async function telegramSendMessage(params: { chatId: string; text: string }) {
-  const chatId = params.chatId?.toString().trim()
-  const text = params.text?.toString().trim()
-  if (!chatId) {
-    throw new Error('telegramSendMessage requires non-empty chatId')
-  }
-  if (!text) {
-    throw new Error('telegramSendMessage requires non-empty text')
-  }
+// deno-lint-ignore no-explicit-any
+type ApiResult = Record<string, any> | null
 
+async function telegramApi(method: string, body: Record<string, unknown>): Promise<ApiResult> {
   const token = mustGetEnv('TELEGRAM_BOT_TOKEN')
-  const url = `https://api.telegram.org/bot${token}/sendMessage`
-  const payload = JSON.stringify({
-    chat_id: chatId,
-    text,
-  })
+  const url = `https://api.telegram.org/bot${token}/${method}`
+  const payload = JSON.stringify(body)
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     let res: Response
@@ -45,24 +36,24 @@ export async function telegramSendMessage(params: { chatId: string; text: string
       res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: payload })
     } catch (error) {
       if (attempt >= MAX_RETRIES) {
-        throw new Error(`Provider sendMessage network failure after ${MAX_RETRIES} attempts: ${error instanceof Error ? error.message : String(error)}`)
+        throw new Error(`Telegram ${method} network failure after ${MAX_RETRIES} attempts: ${error instanceof Error ? error.message : String(error)}`)
       }
       await sleep(getBackoffMs(attempt))
       continue
     }
 
-    if (res.ok) return
+    if (res.ok) return await res.json().catch(() => null) as ApiResult
 
-    const body = await res.text().catch(() => '')
+    const respBody = await res.text().catch(() => '')
     const retryable = res.status === 429 || res.status >= 500
     if (!retryable || attempt >= MAX_RETRIES) {
-      throw new Error(`Telegram sendMessage failed (${res.status}) after ${attempt} attempts: ${body}`)
+      throw new Error(`Telegram ${method} failed (${res.status}) after ${attempt} attempts: ${respBody}`)
     }
 
     let retryAfterMs: number | null = parseRetryAfterMs(res.headers.get('retry-after'))
-    if (res.status === 429 && body) {
+    if (res.status === 429 && respBody) {
       try {
-        const parsed = JSON.parse(body) as { parameters?: { retry_after?: unknown } }
+        const parsed = JSON.parse(respBody) as { parameters?: { retry_after?: unknown } }
         const retryAfter = parsed?.parameters?.retry_after
         retryAfterMs = parseRetryAfterMs(
           retryAfter == null ? null : String(retryAfter),
@@ -73,6 +64,27 @@ export async function telegramSendMessage(params: { chatId: string; text: string
     }
     await sleep(retryAfterMs ?? getBackoffMs(attempt))
   }
-  throw new Error(`telegramSendMessage: exhausted ${MAX_RETRIES} retries`)
+  throw new Error(`Telegram ${method}: exhausted ${MAX_RETRIES} retries`)
+}
+
+/** Send a message and return the Telegram message_id (for later edits). */
+export async function telegramSendMessage(params: { chatId: string; text: string }): Promise<string | undefined> {
+  const chatId = params.chatId?.toString().trim()
+  const text = params.text?.toString().trim()
+  if (!chatId) throw new Error('telegramSendMessage requires non-empty chatId')
+  if (!text) throw new Error('telegramSendMessage requires non-empty text')
+
+  const data = await telegramApi('sendMessage', { chat_id: chatId, text })
+  return data?.result?.message_id?.toString()
+}
+
+/** Edit an existing message in-place (used for tool-call status updates). */
+export async function telegramEditMessageText(params: { chatId: string; messageId: string; text: string }): Promise<void> {
+  const chatId = params.chatId?.toString().trim()
+  const messageId = params.messageId?.toString().trim()
+  const text = params.text?.toString().trim()
+  if (!chatId || !messageId || !text) throw new Error('telegramEditMessageText requires non-empty chatId, messageId, and text')
+
+  await telegramApi('editMessageText', { chat_id: chatId, message_id: Number(messageId), text })
 }
 

@@ -1,4 +1,4 @@
-import { generateText } from "ai";
+import { streamText, stepCountIs } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
@@ -9,12 +9,16 @@ import { logger } from "./logger.ts";
 
 export type LLMProvider = "openai" | "anthropic" | "google";
 
-type ToolSet = Parameters<typeof generateText>[0]["tools"];
+type ToolSet = Parameters<typeof streamText>[0]["tools"];
 
 export type ChatMessage = {
   role: "system" | "user" | "assistant";
   content: string;
 };
+
+export type ToolStreamEvent =
+  | { type: "tool-call-start"; toolCallId: string; toolName: string; args: Record<string, unknown> }
+  | { type: "tool-call-done"; toolCallId: string; toolName: string; result: unknown };
 
 const DEFAULT_MODELS: Record<LLMProvider, string> = {
   openai: "gpt-5.2",
@@ -53,26 +57,52 @@ export async function generateAgentReply({
   model,
   maxSteps = getConfigNumber("agent.max_steps") ?? 5,
   tools,
+  onToolEvent,
 }: {
   messages: ChatMessage[];
   provider?: LLMProvider;
   model?: string;
   maxSteps?: number;
   tools?: ToolSet;
+  onToolEvent?: (event: ToolStreamEvent) => void | Promise<void>;
 }): Promise<string> {
   const providerModel = resolveProviderModel(provider, model);
 
-  const result = await generateText({
+  const result = streamText({
     model: providerModel,
     messages,
     tools: tools ?? { ...workspaceTools, ...skillsTools },
     ...(provider !== "openai" ? { maxOutputTokens: 800 } : {}),
-    ...(maxSteps ? { maxSteps } : {}),
+    stopWhen: stepCountIs(maxSteps),
   });
 
-  logger.debug("llm.generateAgentReply", { result });
+  let text = "";
+  for await (const part of result.fullStream) {
+    switch (part.type) {
+      case "text-delta":
+        text += part.text;
+        break;
+      case "tool-call":
+        await onToolEvent?.({
+          type: "tool-call-start",
+          toolCallId: part.toolCallId,
+          toolName: part.toolName,
+          args: part.input as Record<string, unknown>,
+        });
+        break;
+      case "tool-result":
+        await onToolEvent?.({
+          type: "tool-call-done",
+          toolCallId: part.toolCallId,
+          toolName: part.toolName,
+          result: part.output,
+        });
+        break;
+    }
+  }
 
-  return result.text?.trim() ?? result.toolCalls?.map((toolCall) => `${toolCall.toolName}`).join("\n");
+  logger.debug("llm.generateAgentReply", { textLength: text.length });
+  return text.trim();
 }
 
 export async function buildSystemPrompt(params: {
