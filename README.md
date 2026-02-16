@@ -1,3 +1,7 @@
+<p align='center'>
+<img src='supaclaw.jpeg' width='200' alt='SupaClaw'>
+</p>
+
 # SupaClaw 
 
 A basic version of OpenClaw but built *entirely* on Supabase built-in features.
@@ -8,8 +12,6 @@ Because why not.
 
 I use Supabase daily. I know it. I trust it. I'm already self-hosting it for production projects. It already ships with every primitive needed. 
 
-And because:
-
 - Store and host everything in Supabase, no other Cloud provider or infrastructure needed
 - Minimal Dependency: Supabase, Vercel AI SDK and your LLM Provider, thats it
 - Production ready, battle tested & secure tech, not re-inventing the wheel
@@ -17,7 +19,7 @@ And because:
 
 # Quickstart
 
-Get SupaClaw running in under 10 minutes.
+Get SupaClaw running in under 5 minutes.
 
 ## Prerequisites
 
