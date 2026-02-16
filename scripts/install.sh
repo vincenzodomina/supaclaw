@@ -264,6 +264,12 @@ if ask_yes_no "Configure Anthropic provider variables now?" "n"; then
   prompt_env_var "ANTHROPIC_MODEL" "Anthropic model id." "true" "false" "claude-3-5-sonnet-latest"
 fi
 
+if ask_yes_no "Configure AWS Bedrock provider variables now?" "n"; then
+  prompt_env_var "AWS_BEDROCK_ACCESS_KEY" "AWS Bedrock access key (from IAM console)." "true" "true"
+  prompt_env_var "AWS_BEDROCK_SECRET_ACCESS_KEY" "AWS Bedrock secret access key." "true" "true"
+  prompt_env_var "AWS_REGION" "AWS region for Bedrock." "true" "false" "us-east-1"
+fi
+
 log "Step 5/9 - Seeding workspace .agents files to Supabase Storage"
 WORKSPACE_BUCKET_VALUE="$(get_env_value "WORKSPACE_BUCKET")"
 WORKSPACE_BUCKET_VALUE="${WORKSPACE_BUCKET_VALUE:-workspace}"

@@ -1,10 +1,11 @@
 import { createServiceClient } from "../_shared/supabase.ts";
-import { mustGetEnv, timingSafeEqual, getConfigBoolean, jsonResponse, textResponse } from "../_shared/helpers.ts";
+import { mustGetEnv, timingSafeEqual, getConfigBoolean, getConfigString, jsonResponse, textResponse } from "../_shared/helpers.ts";
 import { telegramSendMessage, telegramEditMessageText } from "../_shared/telegram.ts";
 import { logger } from "../_shared/logger.ts";
 import {
   buildSystemPrompt,
   type ChatMessage,
+  type LLMProvider,
   type ToolStreamEvent,
   generateAgentReply,
 } from "../_shared/llm.ts";
@@ -387,7 +388,9 @@ async function buildAssistantReply(params: {
 
   let rawReply: string;
   try {
-    rawReply = await generateAgentReply({ messages, onToolEvent });
+    const provider = (getConfigString("llms.agent.provider") ?? "openai") as LLMProvider;
+    const model = getConfigString("llms.agent.model") ?? undefined;
+    rawReply = await generateAgentReply({ messages, provider, model, onToolEvent });
   } catch (err) {
     // Mark any pending tool calls as failed
     const errMsg = err instanceof Error ? err.message : String(err);

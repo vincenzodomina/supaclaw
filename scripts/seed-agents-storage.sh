@@ -177,8 +177,7 @@ if [[ -n "${existing_paths//[[:space:]]/}" ]]; then
 fi
 
 uploaded_count=0
-shopt -s globstar nullglob
-for file_path in "${AGENTS_SRC}"/**; do
+while IFS= read -r -d '' file_path; do
   [[ -f "${file_path}" ]] || continue
   rel_path="${file_path#${AGENTS_SRC}/}"
   object_path=".agents/${rel_path}"
@@ -196,6 +195,6 @@ for file_path in "${AGENTS_SRC}"/**; do
     -H "Content-Type: ${content_type}" \
     --data-binary "@${file_path}" >/dev/null
   uploaded_count=$((uploaded_count + 1))
-done
+done < <(find "${AGENTS_SRC}" -type f -print0)
 
 log "Seeded ${uploaded_count} file(s) from ${AGENTS_SRC} into ${WORKSPACE_BUCKET}/.agents."

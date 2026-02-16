@@ -2,12 +2,13 @@ import { streamText, stepCountIs } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
 import { workspaceTools } from "./workspace_tools.ts";
 import { skillsTools, buildSkillsInstructionsBlock } from "./skills.ts";
 import { getConfigNumber } from "./helpers.ts";
 import { logger } from "./logger.ts";
 
-export type LLMProvider = "openai" | "anthropic" | "google";
+export type LLMProvider = "openai" | "anthropic" | "google" | "bedrock";
 
 type ToolSet = Parameters<typeof streamText>[0]["tools"];
 
@@ -24,6 +25,7 @@ const DEFAULT_MODELS: Record<LLMProvider, string> = {
   openai: "gpt-5.2",
   anthropic: "claude-4-5-opus-latest",
   google: "gemini-2.5-pro",
+  bedrock: "us.anthropic.claude-sonnet-4-20250514-v1:0",
 };
 
 function resolveProviderModel(provider: LLMProvider, model?: string) {
@@ -43,6 +45,14 @@ function resolveProviderModel(provider: LLMProvider, model?: string) {
       const apiKey = Deno.env.get("GEMINI_API_KEY");
       if (!apiKey) throw new Error("GEMINI_API_KEY is not set");
       return createGoogleGenerativeAI({ apiKey })(resolvedModel);
+    }
+    case "bedrock": {
+      const region = Deno.env.get("AWS_REGION") ?? "us-east-1";
+      const accessKeyId = Deno.env.get("AWS_BEDROCK_ACCESS_KEY");
+      const secretAccessKey = Deno.env.get("AWS_BEDROCK_SECRET_ACCESS_KEY");
+      if (!accessKeyId || !secretAccessKey)
+        throw new Error("AWS_BEDROCK_ACCESS_KEY and AWS_BEDROCK_SECRET_ACCESS_KEY must be set");
+      return createAmazonBedrock({ region, accessKeyId, secretAccessKey })(resolvedModel);
     }
     default: {
       const _exhaustive: never = provider;
