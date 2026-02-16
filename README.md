@@ -1,15 +1,19 @@
 # SupaClaw 
 
-A nano version of OpenClaw that's **Supabase-native** and uses Supabase built-in features to minimize setup and code to maintain.
+A basic version of OpenClaw but built *entirely* on Supabase built-in features.
 
 ***Why?***
 
-Because i love supabase. And because:
+Because why not.
 
-- **Supabase-only**: Store and host everything in Supabase (DB, files, cron, API)
-- **Minimal Dependency**: Supabase + LLM Provider (if not self hosting), no other Cloud provider or infrastructure needed
-- **Production ready**: Battle tested & secure tech, not re-inventing the wheel
-- **Cloud & Self hosting**: Easy and fast cloud setup, port to private self hosting later
+I use Supabase daily. I know it. I trust it. I'm already self-hosting it for production projects. It already ships with every primitive needed. 
+
+And because:
+
+- Store and host everything in Supabase, no other Cloud provider or infrastructure needed
+- Minimal Dependency: Supabase, Vercel AI SDK and your LLM Provider, thats it
+- Production ready, battle tested & secure tech, not re-inventing the wheel
+- Cloud or self hosting: Fast cloud setup, port to private self hosting later
 
 # Quickstart
 
@@ -24,13 +28,13 @@ Get SupaClaw running in under 10 minutes.
 
 ## Interactive setup walkthrough
 
-Use this script to get guided through all steps. It discovers already set config and running services and idempotently installs/migrate/starts everything step by step.
+Use this script to get guided through all steps. It discovers already set config and running services and idempotently installs/migrates/starts everything step by step.
 
 ```bash
 bash ./scripts/install.sh
 ```
 
-In a nutshell this script actively runs:
+In a nutshell this script basically runs:
 
 ```bash
 supabase start
@@ -45,6 +49,14 @@ supabase functions serve
 For a detailed walkthrough documentation (for local or cloud deployment) look at [DEPLOY.md](DEPLOY.md)
 
 **That's it.** No daemon setup, no complex config, no VPS, no security headaches.
+
+## Architecture
+
+For fancy diagrams look into [ARCHITECTURE.md](ARCHITECTURE.md)
+
+Check out [PRD.md](PRD.md) to see how I briefed my coding agents.
+
+For security-minded folks, see [SECURITY.md](SECURITY.md).
 
 ## Roadmap
 
@@ -70,18 +82,21 @@ For a detailed walkthrough documentation (for local or cloud deployment) look at
 
 ## Contributions
 
-Are welcome! Fork it, tweak it, PR it, repeat!
+...are welcome! 
+
+Fork it, tweak it, PR it, repeat!
 
 ## Credits
 
-Inspired by [OpenClaw](https://github.com/openclaw/openclaw) - amazing project!
+Inspired by [OpenClaw](https://github.com/openclaw/openclaw) - amazing project
+
 Built with: 
-- [Supabase](https://supabase.com) - Because we love it
-- [Vercel AI SDK](https://ai-sdk.dev/) - Awesome multi provider support
+- [Supabase](https://supabase.com) - the goat
+- [Vercel AI SDK](https://ai-sdk.dev/) - awesome multi provider support
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
+MIT License - see missing [LICENSE](LICENSE) file for details.
 
 ---
 
