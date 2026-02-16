@@ -6,7 +6,7 @@ But here's my problem:
 
 I desperately want to know and understand the code that runs against my most private stuff: my files, my knowledge base, my ideas, my health data, my digital life. I want to own it, hack it, customize it. Not run someone else's vibe code bloat.
 
-So, of course, as a developer, you build a tiny version of the thing to understand how it actually works under the hood. There have been a few out there: tinyclaw, nanoclaw, picoclaw ... ok you get the naming pattern ... 
+So, of course, as a developer, you build a tiny version of the thing to understand how it actually works under the hood. There are already a few out there: tinyclaw, nanoclaw, picoclaw, zeroclaw ... ok you get the naming pattern ... 
 
 But they all have the same pain point for me: Not my tech stack, new tech I don't already use or trust and self-hosting infrastructure I don't want to deal with.
 
