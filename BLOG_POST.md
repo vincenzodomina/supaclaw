@@ -10,6 +10,8 @@ So, of course, as a developer, you build a tiny version of the thing to understa
 
 But they all have the same pain point for me: Not my tech stack, new tech I don't already use or trust and self-hosting infrastructure I don't want to deal with.
 
+So i had to built supaclaw.
+
 ## Why Supabase
 
 Because why not.
