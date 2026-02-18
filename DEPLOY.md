@@ -177,7 +177,6 @@ cd supaclaw/supabase/functions/_shared
 deno install
 supabase functions serve \
   --env-file supabase/.env.local \
-  --import-map supabase/functions/_shared/deno.json \
   --no-verify-jwt
 ```
 
