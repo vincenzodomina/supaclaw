@@ -1,5 +1,6 @@
 import { jsonSchema, tool } from "ai";
 import TurndownService from "turndown";
+import { logger } from "../logger.ts";
 import { uploadTextToWorkspace } from "../storage.ts";
 
 const MAX_DOWNLOAD_BYTES = 5 * 1024 * 1024; // 5MB
@@ -494,6 +495,7 @@ export const webFetchTool = tool({
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      logger.warn("tool.web_fetch.error", { error: e, message: msg });
       return { url: parsed.toString(), error: `web_fetch error: ${msg}` };
     } finally {
       clearTimeout(timer);
