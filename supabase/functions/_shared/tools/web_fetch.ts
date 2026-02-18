@@ -160,9 +160,14 @@ function resolveHref(href: string, base: URL): string {
 }
 
 function nodeAttr(node: unknown, name: string): string {
-  const fn = (node as { getAttribute?: (name: string) => unknown })?.getAttribute;
-  const value = typeof fn === "function" ? fn(name) : "";
+  const el = node as { getAttribute?: (name: string) => unknown };
+  if (typeof el?.getAttribute !== "function") return "";
+  const value = el.getAttribute(name);
   return typeof value === "string" ? value : "";
+}
+
+function escapeMarkdownLink(url: string): string {
+  return url.replace(/([()])/g, "\\$1");
 }
 
 function markdownToText(markdown: string): string {
@@ -200,7 +205,7 @@ function htmlToMarkdown(html: string, base: URL): string {
       const label = content.trim();
       if (!label) return resolved;
 
-      return `[${label}](${resolved})`;
+      return `[${label}](${escapeMarkdownLink(resolved)})`;
     },
   });
 
@@ -211,7 +216,7 @@ function htmlToMarkdown(html: string, base: URL): string {
       if (!src) return "";
       const alt = nodeAttr(node, "alt");
       const resolved = resolveHref(src, base);
-      return `![${alt}](${resolved})`;
+      return `![${alt}](${escapeMarkdownLink(resolved)})`;
     },
   });
 
