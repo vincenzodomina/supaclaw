@@ -1,6 +1,5 @@
 import { jsonSchema, tool } from "ai";
 import TurndownService from "turndown";
-import { logger } from "../logger.ts";
 import { uploadTextToWorkspace } from "../storage.ts";
 
 const MAX_DOWNLOAD_BYTES = 5 * 1024 * 1024; // 5MB
@@ -15,10 +14,6 @@ type WebFetchArgs = {
   format?: "markdown" | "text" | "html";
   timeout_seconds?: number;
 };
-
-function redactUrlForLogs(input: URL): string {
-  return `${input.origin}${input.pathname}`;
-}
 
 function parseHostPatterns(input: string | undefined): string[] {
   return (input ?? "")
@@ -163,15 +158,9 @@ function resolveHref(href: string, base: URL): string {
   }
 }
 
-function nodeName(node: unknown): string {
-  const raw = (node as { nodeName?: unknown })?.nodeName;
-  return typeof raw === "string" ? raw : "";
-}
-
 function nodeAttr(node: unknown, name: string): string {
-  const fn = (node as { getAttribute?: unknown })?.getAttribute;
-  if (typeof fn !== "function") return "";
-  const value = (fn as (this: unknown, name: string) => unknown).call(node, name);
+  const fn = (node as { getAttribute?: (name: string) => unknown })?.getAttribute;
+  const value = typeof fn === "function" ? fn(name) : "";
   return typeof value === "string" ? value : "";
 }
 
@@ -201,8 +190,7 @@ function htmlToMarkdown(html: string, base: URL): string {
   turndown.remove(["script", "style", "meta", "link", "noscript"]);
 
   turndown.addRule("absoluteLink", {
-    filter: (node: unknown) =>
-      nodeName(node).toLowerCase() === "a" && Boolean(nodeAttr(node, "href")),
+    filter: "a",
     replacement: (content: string, node: unknown) => {
       const href = nodeAttr(node, "href").trim();
       const resolved = href ? resolveHref(href, base) : "";
@@ -211,27 +199,18 @@ function htmlToMarkdown(html: string, base: URL): string {
       const label = content.trim();
       if (!label) return resolved;
 
-      const escaped = resolved.replace(/([()])/g, "\\$1");
-      const title = nodeAttr(node, "title").trim();
-      const titlePart = title ? ` "${title.replace(/"/g, '\\"')}"` : "";
-      return `[${label}](${escaped}${titlePart})`;
+      return `[${label}](${resolved})`;
     },
   });
 
   turndown.addRule("absoluteImage", {
-    filter: (node: unknown) =>
-      nodeName(node).toLowerCase() === "img" && Boolean(nodeAttr(node, "src")),
+    filter: "img",
     replacement: (_content: string, node: unknown) => {
       const src = nodeAttr(node, "src").trim();
       if (!src) return "";
-      const resolved = resolveHref(src, base).replace(/([()])/g, "\\$1");
-
       const alt = nodeAttr(node, "alt");
-
-      const title = nodeAttr(node, "title").trim();
-      const titlePart = title ? ` "${title.replace(/"/g, '\\"')}"` : "";
-
-      return `![${alt}](${resolved}${titlePart})`;
+      const resolved = resolveHref(src, base);
+      return `![${alt}](${resolved})`;
     },
   });
 
@@ -420,12 +399,6 @@ export const webFetchTool = tool({
     const timer = setTimeout(() => abort.abort(new Error("Timeout")), timeout * 1000);
 
     try {
-      logger.debug("tool.web_fetch.start", {
-        url: redactUrlForLogs(parsed),
-        format: fmt,
-        timeout_seconds: timeout,
-      });
-
       const init: RequestInit = { method: "GET", headers, signal: abort.signal };
       const { response: initial, finalUrl, redirects } = await fetchWithRedirects({
         url: parsed,
@@ -433,18 +406,7 @@ export const webFetchTool = tool({
         maxRedirects: MAX_REDIRECTS,
       });
 
-      // Retry with honest UA if Cloudflare mitigation triggers (UA/TLS fingerprint mismatch).
-      const response =
-        initial.status === 403 && initial.headers.get("cf-mitigated") === "challenge"
-          ? await fetchWithRedirects({
-            url: finalUrl,
-            init: {
-              ...init,
-              headers: { ...headers, "User-Agent": "supaclaw" },
-            },
-            maxRedirects: 0,
-          }).then((x) => x.response)
-          : initial;
+      const response = initial;
 
       if (!response.ok) {
         return {
@@ -508,25 +470,13 @@ export const webFetchTool = tool({
           const uploaded = await uploadTextToWorkspace(path, fullContent, { mimeType });
           saved_path = uploaded.objectPath;
         } catch (e) {
-          logger.warn("tool.web_fetch.save_failed", { error: e });
+          void e;
         }
       }
 
       const output = truncated.truncated
         ? `${truncated.content}\n\n...${truncated.removed} ${truncated.unit} truncated...\n\nFull output saved to: ${saved_path ?? "(save failed)"}`
         : truncated.content;
-
-      logger.debug("tool.web_fetch.done", {
-        url: redactUrlForLogs(parsed),
-        final_url: redactUrlForLogs(finalUrl),
-        status: response.status,
-        content_type: contentType,
-        bytes: byteLength,
-        redirects,
-        truncated: truncated.truncated,
-        saved_path,
-        upgraded_http: upgraded,
-      });
 
       return {
         url: parsed.toString(),
@@ -544,7 +494,6 @@ export const webFetchTool = tool({
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      logger.warn("tool.web_fetch.error", { error: e, message: msg });
       return { url: parsed.toString(), error: `web_fetch error: ${msg}` };
     } finally {
       clearTimeout(timer);
