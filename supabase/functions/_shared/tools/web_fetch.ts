@@ -1,4 +1,5 @@
 import { jsonSchema, tool } from "ai";
+import TurndownService from "turndown";
 import { logger } from "../logger.ts";
 import { uploadTextToWorkspace } from "../storage.ts";
 
@@ -138,17 +139,10 @@ function stripTags(html: string): string {
   return html.replace(/<[^>]*>/g, "");
 }
 
-function removeHtmlNoise(html: string): string {
-  return html
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/<script\b[\s\S]*?<\/script>/gi, "")
-    .replace(/<style\b[\s\S]*?<\/style>/gi, "")
-    .replace(/<noscript\b[\s\S]*?<\/noscript>/gi, "");
-}
-
 function normalizeWhitespace(input: string): string {
   return input
     .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .replace(/[ \t]{2,}/g, " ")
@@ -161,13 +155,6 @@ function htmlTitle(html: string): string | null {
   return normalizeWhitespace(decodeHtmlEntities(stripTags(m[1] ?? ""))) || null;
 }
 
-function htmlToText(html: string): string {
-  const cleaned = removeHtmlNoise(html)
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/(p|div|section|article|header|footer|main|nav|aside|h[1-6]|li|tr|blockquote)>/gi, "\n\n");
-  return normalizeWhitespace(decodeHtmlEntities(stripTags(cleaned)));
-}
-
 function resolveHref(href: string, base: URL): string {
   try {
     return new URL(href, base).toString();
@@ -176,36 +163,79 @@ function resolveHref(href: string, base: URL): string {
   }
 }
 
-function htmlToMarkdown(html: string, base: URL): string {
-  let md = removeHtmlNoise(html);
+function nodeName(node: unknown): string {
+  const raw = (node as { nodeName?: unknown })?.nodeName;
+  return typeof raw === "string" ? raw : "";
+}
 
-  // Links first so inner text survives tag stripping.
-  md = md.replace(
-    /<a\b[^>]*href\s*=\s*("([^"]+)"|'([^']+)'|([^>\s]+))[^>]*>([\s\S]*?)<\/a>/gi,
-    (_m, _g0, g1, g2, g3, g4) => {
-      const href = String(g1 ?? g2 ?? g3 ?? "").trim();
-      const text = normalizeWhitespace(decodeHtmlEntities(stripTags(String(g4 ?? ""))));
-      if (!href) return text;
-      const resolved = resolveHref(href, base);
-      if (!text) return resolved;
-      return `[${text}](${resolved})`;
-    },
+function nodeAttr(node: unknown, name: string): string {
+  const fn = (node as { getAttribute?: unknown })?.getAttribute;
+  if (typeof fn !== "function") return "";
+  const value = (fn as (this: unknown, name: string) => unknown).call(node, name);
+  return typeof value === "string" ? value : "";
+}
+
+function markdownToText(markdown: string): string {
+  let text = markdown;
+  text = text.replace(/!\[[^\]]*]\([^)]+\)/g, "");
+  text = text.replace(/\[([^\]]+)]\([^)]+\)/g, "$1");
+  text = text.replace(/```[\s\S]*?```/g, (block) =>
+    block.replace(/```[^\n]*\n?/g, "").replace(/```/g, ""),
   );
+  text = text.replace(/`([^`]+)`/g, "$1");
+  text = text.replace(/^#{1,6}\s+/gm, "");
+  text = text.replace(/^\s*[-*+]\s+/gm, "");
+  text = text.replace(/^\s*\d+\.\s+/gm, "");
+  return normalizeWhitespace(text);
+}
 
-  md = md
-    .replace(/<h1\b[^>]*>([\s\S]*?)<\/h1>/gi, (_m, g1) => `# ${htmlToText(g1)}\n\n`)
-    .replace(/<h2\b[^>]*>([\s\S]*?)<\/h2>/gi, (_m, g1) => `## ${htmlToText(g1)}\n\n`)
-    .replace(/<h3\b[^>]*>([\s\S]*?)<\/h3>/gi, (_m, g1) => `### ${htmlToText(g1)}\n\n`)
-    .replace(/<h4\b[^>]*>([\s\S]*?)<\/h4>/gi, (_m, g1) => `#### ${htmlToText(g1)}\n\n`)
-    .replace(/<h5\b[^>]*>([\s\S]*?)<\/h5>/gi, (_m, g1) => `##### ${htmlToText(g1)}\n\n`)
-    .replace(/<h6\b[^>]*>([\s\S]*?)<\/h6>/gi, (_m, g1) => `###### ${htmlToText(g1)}\n\n`)
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p>/gi, "\n\n")
-    .replace(/<li\b[^>]*>([\s\S]*?)<\/li>/gi, (_m, g1) => `- ${htmlToText(g1)}\n`)
-    .replace(/<\/(ul|ol)>/gi, "\n");
+function htmlToMarkdown(html: string, base: URL): string {
+  const turndown = new TurndownService({
+    headingStyle: "atx",
+    hr: "---",
+    bulletListMarker: "-",
+    codeBlockStyle: "fenced",
+    emDelimiter: "*",
+  });
 
-  md = normalizeWhitespace(decodeHtmlEntities(stripTags(md)));
-  return md;
+  turndown.remove(["script", "style", "meta", "link", "noscript"]);
+
+  turndown.addRule("absoluteLink", {
+    filter: (node: unknown) =>
+      nodeName(node).toLowerCase() === "a" && Boolean(nodeAttr(node, "href")),
+    replacement: (content: string, node: unknown) => {
+      const href = nodeAttr(node, "href").trim();
+      const resolved = href ? resolveHref(href, base) : "";
+      if (!resolved) return content;
+
+      const label = content.trim();
+      if (!label) return resolved;
+
+      const escaped = resolved.replace(/([()])/g, "\\$1");
+      const title = nodeAttr(node, "title").trim();
+      const titlePart = title ? ` "${title.replace(/"/g, '\\"')}"` : "";
+      return `[${label}](${escaped}${titlePart})`;
+    },
+  });
+
+  turndown.addRule("absoluteImage", {
+    filter: (node: unknown) =>
+      nodeName(node).toLowerCase() === "img" && Boolean(nodeAttr(node, "src")),
+    replacement: (_content: string, node: unknown) => {
+      const src = nodeAttr(node, "src").trim();
+      if (!src) return "";
+      const resolved = resolveHref(src, base).replace(/([()])/g, "\\$1");
+
+      const alt = nodeAttr(node, "alt");
+
+      const title = nodeAttr(node, "title").trim();
+      const titlePart = title ? ` "${title.replace(/"/g, '\\"')}"` : "";
+
+      return `![${alt}](${resolved}${titlePart})`;
+    },
+  });
+
+  return turndown.turndown(html);
 }
 
 async function readBodyLimited(
@@ -455,8 +485,9 @@ export const webFetchTool = tool({
       const fullContent = (() => {
         if (!mime.includes("html")) return raw;
         if (fmt === "html") return raw;
-        if (fmt === "text") return htmlToText(raw);
-        return htmlToMarkdown(raw, finalUrl);
+        const md = htmlToMarkdown(raw, finalUrl);
+        if (fmt === "text") return markdownToText(md);
+        return md;
       })();
 
       const truncated = truncateText(fullContent, {
