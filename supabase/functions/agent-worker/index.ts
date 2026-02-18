@@ -11,9 +11,7 @@ import {
 } from "../_shared/llm.ts";
 import { downloadTextFromWorkspace } from "../_shared/storage.ts";
 import { embedText } from "../_shared/embeddings.ts";
-import { workspaceTools } from "../_shared/workspace_tools.ts";
-import { skillsTools } from "../_shared/skills.ts";
-import { createCronTools, computeNextRun } from "../_shared/cron_tools.ts";
+import { createAllTools, computeNextRun } from "../_shared/tools/index.ts";
 
 type JobRow = {
   id: number;
@@ -175,14 +173,13 @@ async function processProcessMessage(job: JobRow) {
     return;
   }
 
-  const tools = { ...workspaceTools, ...skillsTools, ...createCronTools(sessionId) };
   const reply = await buildAssistantReply({
     jobId: job.id,
     sessionId,
     inboundId: inbound.id,
     inboundContent: inbound.content,
     telegramChatId,
-    tools,
+    tools: createAllTools(sessionId),
   });
 
   // Persist assistant message before delivery; retries will deliver pending messages.
@@ -489,14 +486,13 @@ async function processRunTask(job: JobRow) {
     .single();
   if (msgErr) throw new Error(`Failed to insert task message: ${msgErr.message}`);
 
-  const tools = { ...workspaceTools, ...skillsTools, ...createCronTools(sessionId) };
   const reply = await buildAssistantReply({
     jobId: job.id,
     sessionId,
     inboundId: msg.id,
     inboundContent: content,
     telegramChatId: chatId,
-    tools,
+    tools: createAllTools(sessionId),
   });
 
   const { data: saved, error: saveErr } = await supabase

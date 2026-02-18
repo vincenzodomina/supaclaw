@@ -2,8 +2,8 @@ import { streamText, stepCountIs } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
-import { workspaceTools } from "./workspace_tools.ts";
-import { skillsTools, buildSkillsInstructionsBlock } from "./skills.ts";
+import { tools as defaultTools } from "./tools/index.ts";
+import { buildSkillsInstructionsBlock } from "./skills.ts";
 import { getConfigNumber } from "./helpers.ts";
 import { logger } from "./logger.ts";
 
@@ -71,7 +71,7 @@ export async function generateAgentReply({
   const result = streamText({
     model: providerModel,
     messages,
-    tools: tools ?? { ...workspaceTools, ...skillsTools },
+    tools: tools ?? defaultTools,
     ...(provider !== "openai" ? { maxOutputTokens: 800 } : {}),
     stopWhen: stepCountIs(maxSteps),
   });

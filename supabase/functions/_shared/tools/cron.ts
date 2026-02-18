@@ -1,6 +1,6 @@
 import { jsonSchema, tool } from "ai";
 import { Cron } from "croner";
-import { createServiceClient } from "./supabase.ts";
+import { createServiceClient } from "../supabase.ts";
 
 const supabase = createServiceClient();
 
@@ -19,7 +19,7 @@ type CronArgs = {
   timezone?: string;
   task_type?: "reminder" | "agent_turn";
   prompt?: string;
-  enabled?: boolean; // true=set enabled_at to now(), false=set to null
+  enabled?: boolean;
   id?: number;
   include_disabled?: boolean;
 };
@@ -136,72 +136,70 @@ async function removeTask(args: CronArgs) {
   return { ok: true, id: args.id };
 }
 
-export function createCronTools(sessionId: string) {
-  return {
-    cron: tool({
-      description: [
-        "Manage tasks: reminders, scheduled jobs, and backlog items.",
-        "",
-        "ACTIONS:",
-        "- list: List tasks (optional: include_disabled to show disabled tasks too)",
-        "- add: Create a task (requires: name, prompt; schedule is optional)",
-        "- update: Modify a task (requires: id, plus fields to change)",
-        "- remove: Delete a task (requires: id)",
-        "",
-        "SCHEDULE (optional — omit schedule_type for backlog items):",
-        '- One-shot: set schedule_type="once" and run_at to an ISO-8601 timestamp.',
-        '- Recurring: set schedule_type="recurring" and cron_expr to a 5-field cron expression, with optional timezone (default UTC).',
-        "",
-        "TASK TYPES:",
-        "- reminder: Sends the prompt as a reminder into the current conversation.",
-        "- agent_turn: Runs the agent with the prompt as a background task.",
-        "",
-        "DEFAULTS: task_type=reminder, timezone=UTC, enabled=true (enabled_at is set automatically).",
-        "ISO timestamps without a timezone offset are treated as UTC.",
-        "Cron expressions use standard 5-field format: minute hour day month weekday.",
-      ].join("\n"),
-      inputSchema: jsonSchema<CronArgs>({
-        type: "object",
-        properties: {
-          action: {
-            type: "string",
-            enum: ["list", "add", "update", "remove"],
-            description: "Action to perform.",
-          },
-          name: { type: "string", description: "Human-readable task name." },
-          description: { type: "string", description: "Optional task description." },
-          schedule_type: {
-            type: "string",
-            enum: ["once", "recurring"],
-            description: "once = one-shot, recurring = cron-based repeat. Omit for backlog items.",
-          },
-          run_at: { type: "string", description: "ISO-8601 timestamp for once schedules." },
-          cron_expr: { type: "string", description: "5-field cron expression for recurring schedules." },
-          timezone: { type: "string", description: "IANA timezone for cron_expr (default UTC)." },
-          task_type: {
-            type: "string",
-            enum: ["reminder", "agent_turn"],
-            description: "What happens when the task fires (default reminder).",
-          },
-          prompt: { type: "string", description: "The text/prompt for the task." },
-          enabled: { type: "boolean", description: "Enable or disable the task." },
-          id: { type: "number", description: "Task ID (required for update/remove)." },
-          include_disabled: { type: "boolean", description: "Include disabled tasks in list results." },
+export function createCronTool(sessionId: string) {
+  return tool({
+    description: [
+      "Manage tasks: reminders, scheduled jobs, and backlog items.",
+      "",
+      "ACTIONS:",
+      "- list: List tasks (optional: include_disabled to show disabled tasks too)",
+      "- add: Create a task (requires: name, prompt; schedule is optional)",
+      "- update: Modify a task (requires: id, plus fields to change)",
+      "- remove: Delete a task (requires: id)",
+      "",
+      "SCHEDULE (optional — omit schedule_type for backlog items):",
+      '- One-shot: set schedule_type="once" and run_at to an ISO-8601 timestamp.',
+      '- Recurring: set schedule_type="recurring" and cron_expr to a 5-field cron expression, with optional timezone (default UTC).',
+      "",
+      "TASK TYPES:",
+      "- reminder: Sends the prompt as a reminder into the current conversation.",
+      "- agent_turn: Runs the agent with the prompt as a background task.",
+      "",
+      "DEFAULTS: task_type=reminder, timezone=UTC, enabled=true (enabled_at is set automatically).",
+      "ISO timestamps without a timezone offset are treated as UTC.",
+      "Cron expressions use standard 5-field format: minute hour day month weekday.",
+    ].join("\n"),
+    inputSchema: jsonSchema<CronArgs>({
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          enum: ["list", "add", "update", "remove"],
+          description: "Action to perform.",
         },
-        required: ["action"],
-        additionalProperties: false,
-      }),
-      execute: async (args: CronArgs) => {
-        try {
-          if (args.action === "list") return await listTasks(args);
-          if (args.action === "add") return await addTask(sessionId, args);
-          if (args.action === "update") return await updateTask(args);
-          if (args.action === "remove") return await removeTask(args);
-          return { error: `Unknown action: ${args.action}` };
-        } catch (e) {
-          return { error: `Cron tool error: ${e instanceof Error ? e.message : String(e)}` };
-        }
+        name: { type: "string", description: "Human-readable task name." },
+        description: { type: "string", description: "Optional task description." },
+        schedule_type: {
+          type: "string",
+          enum: ["once", "recurring"],
+          description: "once = one-shot, recurring = cron-based repeat. Omit for backlog items.",
+        },
+        run_at: { type: "string", description: "ISO-8601 timestamp for once schedules." },
+        cron_expr: { type: "string", description: "5-field cron expression for recurring schedules." },
+        timezone: { type: "string", description: "IANA timezone for cron_expr (default UTC)." },
+        task_type: {
+          type: "string",
+          enum: ["reminder", "agent_turn"],
+          description: "What happens when the task fires (default reminder).",
+        },
+        prompt: { type: "string", description: "The text/prompt for the task." },
+        enabled: { type: "boolean", description: "Enable or disable the task." },
+        id: { type: "number", description: "Task ID (required for update/remove)." },
+        include_disabled: { type: "boolean", description: "Include disabled tasks in list results." },
       },
+      required: ["action"],
+      additionalProperties: false,
     }),
-  } as const;
+    execute: async (args: CronArgs) => {
+      try {
+        if (args.action === "list") return await listTasks(args);
+        if (args.action === "add") return await addTask(sessionId, args);
+        if (args.action === "update") return await updateTask(args);
+        if (args.action === "remove") return await removeTask(args);
+        return { error: `Unknown action: ${args.action}` };
+      } catch (e) {
+        return { error: `Cron tool error: ${e instanceof Error ? e.message : String(e)}` };
+      }
+    },
+  });
 }
