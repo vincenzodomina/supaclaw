@@ -96,6 +96,7 @@ Inspired by [OpenClaw](https://github.com/openclaw/openclaw) - amazing project
 Built with: 
 - [Supabase](https://supabase.com) - the goat
 - [Vercel AI SDK](https://ai-sdk.dev/) - awesome multi provider support
+- [OpenCode](https://github.com/sst/opencode) - inspiration for the tools
 
 ## License
 
