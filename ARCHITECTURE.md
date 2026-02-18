@@ -22,6 +22,7 @@ This document explains how SupaClaw works under the hood and how it differs from
 │  │ • sessions  │  │ • workspace  │  │ • users  │  │
 │  │ • messages  │  │   /.agents/**│  │ • tokens │  │
 │  │ • jobs      │  │   /files/**  │  │          │  │
+│  │ • tasks     │  │              │  │          │  │
 │  └─────────────┘  └──────────────┘  └──────────┘  │
 │                                                   │
 │  ┌─────────────────────────────────────────────┐  │
@@ -81,7 +82,8 @@ Least amount of code:
 - **Postgres (source of truth)**
   - `sessions`: one per conversation surface (Telegram chat)
   - `messages`: all inbound/outbound messages (append-only)
-  - `jobs`: queued units of work (process inbound message, run reminder, run trigger)
+  - `jobs`: queued units of work (process inbound message, run task, run trigger)
+  - `tasks`: scheduled task definitions (one-shot reminders, recurring cron jobs, or unscheduled backlog items)
   - `memories`: store/read/search tools to manage context across sessions
   - `files`: metadata, vectors, relation to messages
 
@@ -96,8 +98,10 @@ Least amount of code:
   - `trigger-webhook`: authenticated endpoint for external apps to enqueue jobs
 
 - **Cron**
-  - Runs `agent-worker` on a short interval (e.g. every 1 min) to ensure eventual processing + scheduled tasks.
-  - Scheduled tasks are just `jobs` with `run_at`.
+  - Runs every minute via pg_cron: first calls `enqueue_due_tasks()` to move due `tasks` into the `jobs` queue, then invokes `agent-worker` via pg_net.
+  - One-shot tasks (`schedule_type='once'`) auto-disable after firing.
+  - Recurring tasks (`schedule_type='recurring'`) get their `next_run_at` recomputed by the worker after each run (using croner for cron expression parsing).
+  - Unscheduled tasks (no `schedule_type`) act as backlog items — tracked but never auto-fired.
 
 #### Core flows
 - **Inbound message**
@@ -107,8 +111,10 @@ Least amount of code:
   4. `agent-worker` picks job, composes prompt (SOUL + recent messages + retrieved memory), calls LLM, runs tools, persists, sends reply via Telegram API
 
 - **Scheduled task / reminder**
-  1. A row in `jobs` becomes due (`run_at <= now()`)
-  2. Cron-triggered `agent-worker` processes it the same way
+  1. Agent (or user via chat) creates a `tasks` row using the `cron` tool (with schedule_type, run_at or cron_expr, and a prompt)
+  2. Every minute, `enqueue_due_tasks()` checks for tasks where `next_run_at <= now()`, enqueues a `job(type="run_task")`, and clears `next_run_at` to prevent double-fire
+  3. `agent-worker` claims the job, inserts the task prompt as a message in the bound session, generates an agent reply (with full tool access), delivers via channel provider
+  4. For recurring tasks, the worker recomputes `next_run_at` from the cron expression; for one-shot tasks, the task is disabled
 
 - **External trigger (nice-to-have but aligns with your “avoid heartbeat tokens”)**
   - `trigger-webhook` creates jobs so external systems can enqueue deterministic work without “agent polling”
@@ -160,13 +166,16 @@ Least amount of code:
 ### Cron Job Flow
 
 ```
-1. pg_cron triggers scheduled query
+1. pg_cron triggers scheduled query (every minute)
    │
    ▼
-2. pg_net makes HTTP POST to `/functions/v1/agent-worker`
+2. Checks due tasks table and enqueues a job to run task
    │
    ▼
-3. `agent-worker` processes due jobs and exits fast if none are due
+3. pg_net makes HTTP POST to `/functions/v1/agent-worker`
+   │
+   ▼
+4. `agent-worker` claims jobs and exits fast if no jobs are due
 ```
 
 ## Security Notes
@@ -180,7 +189,7 @@ Least amount of code:
 | Feature | OpenClaw | SupaClaw |
 |---------|----------|----------|
 | **Storage** | Local SQLite + filesystem | Supabase Storage + PostgreSQL |
-| **Cron** | Custom scheduler | Supabase pg_cron |
+| **Cron** | Custom in-process scheduler (2000+ lines) | pg_cron + `tasks` table + `enqueue_due_tasks()` SQL function |
 | **Agent Loop** | Built-in | Supabase Edge Functions worker + DB jobs |
 | **Files** | Local filesystem | Supabase Storage buckets |
 | **Config** | Local YAML | Supabase DB + env vars |

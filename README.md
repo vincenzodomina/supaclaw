@@ -13,7 +13,7 @@ Because why not.
 I use Supabase daily. I know it. I trust it. I'm already self-hosting it for production projects. It already ships with every primitive needed. 
 
 - Store and host everything in Supabase, no other Cloud provider or infrastructure needed
-- Minimal Dependency: Supabase, Vercel AI SDK and your LLM Provider, thats it
+- Minimal Dependencies: Supabase, Vercel AI SDK, your LLM provider, and croner for cron scheduling — thats it
 - Production ready, battle tested & secure tech, not re-inventing the wheel
 - Cloud or self hosting: Fast cloud setup, port to private self hosting later
 
@@ -69,10 +69,11 @@ For security-minded folks, see [SECURITY.md](SECURITY.md).
 - ✅ Memory tables + hybrid search (FTS + pgvector)
 - ✅ Tools (read/write/list/edit)
 - ✅ Skills
+- ✅ Cron tool (reminders, scheduled tasks, recurring jobs)
 
 ### Missing (v0.2.0)
 - [ ] More channels (Slack, Whatsapp, ..)
-- [ ] More tools (web/task/search)
+- [ ] More tools (web/search)
 - [ ] Sandbox shell execution
 - [ ] Self access via Github
 - [ ] Connectors (calendar, email, etc.)

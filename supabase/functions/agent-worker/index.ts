@@ -5,11 +5,15 @@ import { logger } from "../_shared/logger.ts";
 import {
   buildSystemPrompt,
   type ChatMessage,
+  type ToolSet,
   type ToolStreamEvent,
   generateAgentReply,
 } from "../_shared/llm.ts";
 import { downloadTextFromWorkspace } from "../_shared/storage.ts";
 import { embedText } from "../_shared/embeddings.ts";
+import { workspaceTools } from "../_shared/workspace_tools.ts";
+import { skillsTools } from "../_shared/skills.ts";
+import { createCronTools, computeNextRun } from "../_shared/cron_tools.ts";
 
 type JobRow = {
   id: number;
@@ -171,12 +175,14 @@ async function processProcessMessage(job: JobRow) {
     return;
   }
 
+  const tools = { ...workspaceTools, ...skillsTools, ...createCronTools(sessionId) };
   const reply = await buildAssistantReply({
     jobId: job.id,
     sessionId,
     inboundId: inbound.id,
     inboundContent: inbound.content,
     telegramChatId,
+    tools,
   });
 
   // Persist assistant message before delivery; retries will deliver pending messages.
@@ -224,6 +230,7 @@ async function buildAssistantReply(params: {
   inboundId: number;
   inboundContent: string;
   telegramChatId: string;
+  tools?: ToolSet;
 }) {
   const [agents, soul, identity, user, bootstrap, heartbeat, tools, memory] =
     await Promise.all([
@@ -387,7 +394,7 @@ async function buildAssistantReply(params: {
 
   let rawReply: string;
   try {
-    rawReply = await generateAgentReply({ messages, onToolEvent });
+    rawReply = await generateAgentReply({ messages, onToolEvent, tools: params.tools });
   } catch (err) {
     // Mark any pending tool calls as failed
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -418,6 +425,109 @@ async function buildAssistantReply(params: {
     replyLength: reply.length,
   });
   return reply;
+}
+
+async function updateTaskAfterRun(taskId: number) {
+  const { data: task, error } = await supabase
+    .from("tasks")
+    .select("schedule_type, cron_expr, timezone, run_count")
+    .eq("id", taskId)
+    .maybeSingle();
+  if (error || !task) return;
+
+  const patch: Record<string, unknown> = {
+    last_run_at: new Date().toISOString(),
+    run_count: task.run_count + 1,
+    last_error: null,
+    updated_at: new Date().toISOString(),
+  };
+
+  if (task.schedule_type === "recurring" && task.cron_expr) {
+    const next = computeNextRun(task.cron_expr, task.timezone ?? "UTC");
+    patch.next_run_at = next?.toISOString() ?? null;
+  } else if (task.schedule_type === "once") {
+    patch.enabled_at = null;
+  }
+
+  await supabase.from("tasks").update(patch).eq("id", taskId);
+}
+
+async function processRunTask(job: JobRow) {
+  const taskId = job.payload.task_id as number;
+  const prompt = job.payload.prompt as string;
+  const sessionId = job.payload.session_id as string;
+  const taskType = (job.payload.task_type as string) || "reminder";
+
+  if (!taskId || !prompt || !sessionId) throw new Error("Invalid run_task payload");
+
+  logger.info("job.run_task.start", { jobId: job.id, taskId, taskType });
+
+  const { data: session, error: sessErr } = await supabase
+    .from("sessions")
+    .select("id, channel, channel_chat_id")
+    .eq("id", sessionId)
+    .maybeSingle();
+  if (sessErr) throw new Error(`Failed to load session: ${sessErr.message}`);
+  if (!session) throw new Error(`Session not found: ${sessionId}`);
+
+  const chatId = session.channel_chat_id;
+  const role = taskType === "agent_turn" ? "user" : "system";
+  const content = taskType === "reminder" ? `Reminder: ${prompt}` : prompt;
+
+  const { data: msg, error: msgErr } = await supabase
+    .from("messages")
+    .insert({
+      session_id: sessionId,
+      role,
+      type: "text",
+      content,
+      provider: "system",
+      provider_update_id: `task:${taskId}:${Date.now()}`,
+      telegram_chat_id: chatId,
+    })
+    .select("id")
+    .single();
+  if (msgErr) throw new Error(`Failed to insert task message: ${msgErr.message}`);
+
+  const tools = { ...workspaceTools, ...skillsTools, ...createCronTools(sessionId) };
+  const reply = await buildAssistantReply({
+    jobId: job.id,
+    sessionId,
+    inboundId: msg.id,
+    inboundContent: content,
+    telegramChatId: chatId,
+    tools,
+  });
+
+  const { data: saved, error: saveErr } = await supabase
+    .from("messages")
+    .insert({
+      session_id: sessionId,
+      reply_to_message_id: msg.id,
+      role: "assistant",
+      type: "text",
+      content: reply,
+      provider: "telegram",
+      telegram_chat_id: chatId,
+      telegram_sent_at: null,
+    })
+    .select("id")
+    .single();
+  if (saveErr) throw new Error(`Failed to persist reply: ${saveErr.message}`);
+
+  await telegramSendMessage({ chatId, text: reply });
+
+  const { error: deliveredErr } = await supabase
+    .from("messages")
+    .update({ telegram_sent_at: new Date().toISOString() })
+    .eq("id", saved.id);
+  if (deliveredErr) {
+    logger.warn("job.run_task.mark_delivered_failed", { jobId: job.id, replyId: saved.id, error: deliveredErr });
+  }
+
+  await updateTaskAfterRun(taskId);
+
+  logger.info("job.run_task.done", { jobId: job.id, taskId, replyId: saved.id });
 }
 
 function processTrigger(job: JobRow) {
@@ -475,6 +585,7 @@ async function processEmbed(job: JobRow, config: EmbedConfig) {
 
 async function processJob(job: JobRow) {
   if (job.type === "process_message") return await processProcessMessage(job);
+  if (job.type === "run_task") return await processRunTask(job);
   const embedConfig = EMBED_CONFIG[job.type];
   if (embedConfig) return await processEmbed(job, embedConfig);
   if (job.type === "trigger") return processTrigger(job);

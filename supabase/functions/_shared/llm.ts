@@ -9,7 +9,7 @@ import { logger } from "./logger.ts";
 
 export type LLMProvider = "openai" | "anthropic" | "google";
 
-type ToolSet = Parameters<typeof streamText>[0]["tools"];
+export type ToolSet = Parameters<typeof streamText>[0]["tools"];
 
 export type ChatMessage = {
   role: "system" | "user" | "assistant";
