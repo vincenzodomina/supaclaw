@@ -2,11 +2,11 @@ import { jsonSchema, tool } from "ai";
 import TurndownService from "turndown";
 import { getConfigBoolean, getConfigString } from "../helpers.ts";
 import { logger } from "../logger.ts";
-import { uploadTextToWorkspace } from "../storage.ts";
+import { uploadFileToWorkspace } from "../storage.ts";
 
-const MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024; // 20MB
-const MAX_OUTPUT_BYTES = 250 * 1024; // 250KB
-const MAX_OUTPUT_LINES = 10000;
+const MAX_DOWNLOAD_BYTES = 5 * 1024 * 1024; // 5MB
+const MAX_OUTPUT_BYTES = 50 * 1024; // 50KB
+const MAX_OUTPUT_LINES = 2000;
 const DEFAULT_TIMEOUT_SECONDS = 30;
 const MAX_TIMEOUT_SECONDS = 120;
 const MAX_REDIRECTS = 5;
@@ -24,6 +24,21 @@ type Guard = {
   deny: string[];
   dnsCache: Map<string, string[]>;
   dnsCheck: boolean;
+};
+
+const MIME_EXT: Record<string, string> = {
+  "application/pdf": "pdf",
+  "application/zip": "zip",
+  "application/gzip": "gz",
+  "application/x-tar": "tar",
+  "application/octet-stream": "bin",
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+  "image/gif": "gif",
+  "audio/mpeg": "mp3",
+  "audio/wav": "wav",
+  "video/mp4": "mp4",
 };
 
 function parseHostPatterns(input: string | undefined): string[] {
@@ -321,6 +336,28 @@ function formatUrl(url: URL, includeQuery: boolean): string {
   return out.toString();
 }
 
+function extFromUrl(url: URL): string | null {
+  const cleanPath = url.pathname.split("/").filter(Boolean).pop() ?? "";
+  const dot = cleanPath.lastIndexOf(".");
+  if (dot <= 0 || dot === cleanPath.length - 1) return null;
+  const ext = cleanPath.slice(dot + 1).toLowerCase();
+  return /^[a-z0-9]{1,10}$/.test(ext) ? ext : null;
+}
+
+function extFromMime(mime: string): string | null {
+  if (MIME_EXT[mime]) return MIME_EXT[mime];
+  const slash = mime.indexOf("/");
+  if (slash === -1) return null;
+  const raw = mime.slice(slash + 1).trim().toLowerCase();
+  if (!raw) return null;
+  const normalized = raw.split("+").pop() ?? raw;
+  return /^[a-z0-9.-]{1,20}$/.test(normalized) ? normalized.replace(/[^a-z0-9]/g, "") : null;
+}
+
+function storagePath(prefix: string, ext: string): string {
+  return `${prefix}/${crypto.randomUUID()}.${ext || "bin"}`;
+}
+
 function markdownToText(markdown: string): string {
   let text = markdown;
   text = text.replace(/!\[[^\]]*]\([^)]+\)/g, "");
@@ -507,7 +544,9 @@ export const webFetchTool = tool({
     "",
     "Large responses:",
     `- Max download: ${MAX_DOWNLOAD_BYTES} bytes.`,
-    `- Tool output is truncated to ~${MAX_OUTPUT_BYTES} bytes / ${MAX_OUTPUT_LINES} lines; full output is saved to workspace storage under .agents/tool-output/web_fetch/ and the path is returned.`,
+    `- Tool output is truncated to ~${MAX_OUTPUT_BYTES} bytes / ${MAX_OUTPUT_LINES} lines; full output is saved to workspace storage under downloads/.`,
+    "- Oversized outputs currently return a summary placeholder (TODO: summarizer integration planned in PRD).",
+    "- Non-text responses are downloaded to workspace storage under downloads/ and returned via saved_path.",
   ].join("\n"),
   inputSchema: jsonSchema<WebFetchArgs>({
     type: "object",
@@ -604,13 +643,22 @@ export const webFetchTool = tool({
         mime.endsWith("+xml");
 
       if (!isTextLike) {
+        const { bytes, byteLength } = await readBodyLimited(response, MAX_DOWNLOAD_BYTES);
+        const ext = extFromUrl(finalUrl) ?? extFromMime(mime) ?? "bin";
+        const path = storagePath("downloads", ext);
+        const uploaded = await uploadFileToWorkspace(path, bytes, {
+          mimeType: contentType || "application/octet-stream",
+        });
         return {
           url: formatUrl(parsed, includeQuery),
           final_url: formatUrl(finalUrl, includeQuery),
           status: response.status,
           content_type: contentType,
-          error: `Unsupported content-type: ${contentType || "(missing)"}`,
+          downloaded: true,
+          saved_path: uploaded.objectPath,
+          bytes: byteLength,
           redirects,
+          content: `Downloaded non-text response to ${uploaded.objectPath}`,
         };
       }
 
@@ -640,22 +688,28 @@ export const webFetchTool = tool({
       let saved_path: string | null = null;
       if (truncated.truncated) {
         const ext = fmt === "html" ? "html" : fmt === "markdown" ? "md" : "txt";
-        const path = `.agents/tool-output/web_fetch/${crypto.randomUUID()}.${ext}`;
+        const path = storagePath("downloads", ext);
         const mimeType = fmt === "html"
           ? "text/html; charset=utf-8"
           : fmt === "markdown"
           ? "text/markdown; charset=utf-8"
           : "text/plain; charset=utf-8";
-        try {
-          const uploaded = await uploadTextToWorkspace(path, fullContent, { mimeType });
-          saved_path = uploaded.objectPath;
-        } catch (e) {
-          void e;
-        }
+        const uploaded = await uploadFileToWorkspace(path, fullContent, {
+          mimeType,
+          defaultMimeType: "text/plain; charset=utf-8",
+        });
+        saved_path = uploaded.objectPath;
       }
 
+      // TODO(PRD): Replace this placeholder with an actual summarizer pipeline.
+      // PRD intent: oversized tool outputs should be summarized for the model,
+      // while full content remains stored in tool-output storage.
       const output = truncated.truncated
-        ? `${truncated.content}\n\n...${truncated.removed} ${truncated.unit} truncated...\n\nFull output saved to: ${saved_path ?? "(save failed)"}`
+        ? [
+          `Content exceeded inline limit and was stored at: ${saved_path}`,
+          `Truncated amount: ${truncated.removed} ${truncated.unit}.`,
+          "Summary unavailable yet (TODO: add summarizer step for oversized web_fetch results).",
+        ].join("\n")
         : truncated.content;
 
       return {

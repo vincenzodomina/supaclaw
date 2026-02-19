@@ -75,15 +75,21 @@ export async function downloadTextFromWorkspace(
   return await data.text();
 }
 
-export async function uploadTextToWorkspace(
+export async function uploadFileToWorkspace(
   objectPath: string,
-  content: string,
-  options?: { mimeType?: string },
+  content: string | Uint8Array,
+  options?: { mimeType?: string; defaultMimeType?: string },
 ): Promise<{ bucket: string; objectPath: string }> {
   const bucket = getWorkspaceBucketName();
   const safePath = sanitizeObjectPath(objectPath);
-  const body = new Blob([content], {
-    type: options?.mimeType ?? "text/plain; charset=utf-8",
+  const part = typeof content === "string"
+    ? content
+    : content.buffer.slice(
+      content.byteOffset,
+      content.byteOffset + content.byteLength,
+    ) as ArrayBuffer;
+  const body = new Blob([part], {
+    type: options?.mimeType ?? options?.defaultMimeType ?? "application/octet-stream",
   });
 
   const { error } = await supabase.storage.from(bucket).upload(safePath, body, {
@@ -164,7 +170,10 @@ export async function writeWorkspaceText(
   content: string,
   options?: { mimeType?: string },
 ): Promise<{ bucket: string; objectPath: string }> {
-  const upload = await uploadTextToWorkspace(objectPath, content, options);
+  const upload = await uploadFileToWorkspace(objectPath, content, {
+    mimeType: options?.mimeType,
+    defaultMimeType: "text/plain; charset=utf-8",
+  });
 
   await upsertWorkspaceFileRecord({
     bucket: upload.bucket,

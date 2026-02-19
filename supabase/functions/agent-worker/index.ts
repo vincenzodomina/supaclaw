@@ -342,7 +342,7 @@ async function buildAssistantReply(params: {
         tool_name: event.toolName,
         tool_status: "started",
         provider: "telegram",
-        provider_update_id: `tool:${params.inboundId}:${toolSeq}`,
+        provider_update_id: `tool:${params.inboundId}:${event.toolCallId}`,
         telegram_chat_id: params.telegramChatId,
       }).select("id").single();
 
