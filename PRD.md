@@ -47,6 +47,7 @@ Imagine an AI agent that you can setup with one command in the cloud in under 10
 
 ### Should Have
 
+- **Core Tools Built-in** - See list of core tools in separate section
 - **Tool extensibility** — easy to add new capabilities
 - **Multi-channel** — same agent, different surfaces
 
@@ -72,6 +73,10 @@ Imagine an AI agent that you can setup with one command in the cloud in under 10
     - `read_file`: returns `{ exists, content }` with `content=null` when missing (no hard error for absence).
     - `write_file`: creates/overwrites (upsert) UTF-8 text; optional `mime_type`; returns `{ ok: true, path }` and upserts a `files` DB record.
     - `edit_file`: read-modify-write via ordered exact replacements (`replace_all` optional); errors if file missing / `old_text` empty; returns per-edit replacement counts.
+- **`skills`**
+    - Workspace storage is the source of truth: skills live at `.agents/skills/<slug>/SKILL.md`; `sync` is rejected.
+    - `list`: returns available skills by scanning `.agents/skills/*` and parsing `SKILL.md` (YAML frontmatter per agentskills.io standard)
+    - `load|read`: `load` returns full `SKILL.md`; `read` returns a referenced text file inside the skill folder (root file or one-level path like `references/REFERENCE.md`).
 - **`web_search / web_fetch`** 
     — chain-friendly: returns compact structured results (title/url/snippet/etc.) meant to be followed by `web_fetch` for deeper reads; clamp `count`, snippet sizes, and enforce timeouts.
     - provider-aware + resilient: supports multiple providers with `provider=auto` and fallbacks that prefer free tiers / low-friction setups (use keyless/shared backends when available). Missing keys must not crash the agent run; return actionable structured errors only after fallbacks are exhausted.
@@ -81,6 +86,10 @@ Imagine an AI agent that you can setup with one command in the cloud in under 10
     — mandatory recall step: run before answering about prior decisions/preferences/facts/todos; returns top matching memory items.
     - Postgres-only: backed by `hybrid_search` over the `memories` table (FTS + pgvector); no local filesystem / no SQLite.
     - Defaults + knobs: `scope=auto` (global pinned facts + current-session summaries); supports `scope=current|all`, `types`, `max_results`, `match_count` (all clamped).
+- **`cron`**
+    - Let the agent manage reminders and scheduled jobs via the `tasks` table.
+    - Actions: `list|add|update|remove`; `list` excludes disabled tasks by default.
+    - Scheduling: `once` requires `run_at` (ISO-8601); `recurring` requires a 5-field `cron_expr` + optional IANA `timezone` (default `UTC`) and computes/updates `next_run_at`.
 
 ---
 
