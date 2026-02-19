@@ -60,6 +60,30 @@ Imagine an AI agent that you can setup with one command in the cloud in under 10
 
 ---
 
+## Tools
+
+- **Shape & Registry** — tools live each in their own file, use the Vercel AI SDK `tool()` API, and are registered in on index.
+- **Bounded outputs** — tool calls and results are stored in the message timeline; keep outputs small + JSON-serializable. If output is large, truncate and save the full content to Supabase Storage and return a pointer/path.
+- **Reliability**: must not crash the agent loop; on errors return structured `{ error, message }` with a clear and informative message for the agent and the assistant should explicitly say when nothing relevant was found.
+- **`list_files`, `read_file`, `write_file`, `edit_file`**
+    - File tools interact with the files table for metadata and the Supabase storage api's for blobs. No direct filesystem access.
+    - Workspace storage only access for the agent: workspace-root-relative paths are sanitized (no leading `/`, no `..`) and map to Supabase Storage.
+    - `list_files`: non-recursive listing under a prefix; `path="."` or empty lists the workspace root.
+    - `read_file`: returns `{ exists, content }` with `content=null` when missing (no hard error for absence).
+    - `write_file`: creates/overwrites (upsert) UTF-8 text; optional `mime_type`; returns `{ ok: true, path }` and upserts a `files` DB record.
+    - `edit_file`: read-modify-write via ordered exact replacements (`replace_all` optional); errors if file missing / `old_text` empty; returns per-edit replacement counts.
+- **`web_search / web_fetch`** 
+    — chain-friendly: returns compact structured results (title/url/snippet/etc.) meant to be followed by `web_fetch` for deeper reads; clamp `count`, snippet sizes, and enforce timeouts.
+    - provider-aware + resilient: supports multiple providers with `provider=auto` and fallbacks that prefer free tiers / low-friction setups (use keyless/shared backends when available). Missing keys must not crash the agent run; return actionable structured errors only after fallbacks are exhausted.
+    - Current events guidance:  when recency matters, include the current year in `web_search` queries.
+    - External content safety: `web_fetch` / `web_search` treat external content as untrusted; block SSRF/local targets and support optional allow/deny host lists.
+- **`memory_search`**
+    — mandatory recall step: run before answering about prior decisions/preferences/facts/todos; returns top matching memory items.
+    - Postgres-only: backed by `hybrid_search` over the `memories` table (FTS + pgvector); no local filesystem / no SQLite.
+    - Defaults + knobs: `scope=auto` (global pinned facts + current-session summaries); supports `scope=current|all`, `types`, `max_results`, `match_count` (all clamped).
+
+---
+
 ## Constraints
 
 ### Technical Constraints

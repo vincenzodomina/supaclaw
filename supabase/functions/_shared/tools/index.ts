@@ -6,6 +6,7 @@ import { skillsTool } from "./skills.ts";
 import { createCronTool } from "./cron.ts";
 import { webFetchTool } from "./web_fetch.ts";
 import { webSearchTool } from "./web_search.ts";
+import { createMemorySearchTool } from "./memory_search.ts";
 
 export { computeNextRun } from "./cron.ts";
 
@@ -23,5 +24,6 @@ export function createAllTools(sessionId: string) {
   return {
     ...tools,
     cron: createCronTool(sessionId),
+    memory_search: createMemorySearchTool(sessionId),
   } as const;
 }
