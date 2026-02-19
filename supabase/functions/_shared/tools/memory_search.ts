@@ -24,6 +24,7 @@ type MemoryRow = {
   session_id: string | null;
   type: MemoryType;
   content: string;
+  score: number;
   priority: number | null;
   metadata: Record<string, unknown> | null;
   created_at: string;
@@ -68,8 +69,18 @@ function selectAutoScopedMemories(params: {
   maxResults: number;
   allowedTypes: Set<MemoryType>;
 }) {
-  const pinnedLimit = Math.max(1, Math.ceil(params.maxResults / 2));
-  const summaryLimit = Math.max(0, params.maxResults - pinnedLimit);
+  const allowPinned = params.allowedTypes.has("pinned_fact");
+  const allowSummary = params.allowedTypes.has("summary");
+  const pinnedLimit = !allowPinned
+    ? 0
+    : !allowSummary
+      ? params.maxResults
+      : Math.max(1, Math.ceil(params.maxResults / 2));
+  const summaryLimit = !allowSummary
+    ? 0
+    : !allowPinned
+      ? params.maxResults
+      : Math.max(0, params.maxResults - pinnedLimit);
   const pinned: MemoryRow[] = [];
   const summaries: MemoryRow[] = [];
 

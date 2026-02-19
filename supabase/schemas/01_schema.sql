@@ -465,7 +465,16 @@ begin
         limit least(match_count, 30) * 2
       )
       select
-        (to_jsonb(base) - 'embedding' - 'fts') as row_json,
+        (
+          (to_jsonb(base) - 'embedding' - 'fts')
+          || jsonb_build_object(
+            'score',
+            (
+              coalesce(1.0 / (rrf_k + full_text.rank_ix), 0.0) * full_text_weight +
+              coalesce(1.0 / (rrf_k + semantic.rank_ix), 0.0) * semantic_weight
+            )
+          )
+        ) as row_json,
         (
           coalesce(1.0 / (rrf_k + full_text.rank_ix), 0.0) * full_text_weight +
           coalesce(1.0 / (rrf_k + semantic.rank_ix), 0.0) * semantic_weight
@@ -512,7 +521,16 @@ begin
         limit least(match_count, 30) * 2
       )
       select
-        (to_jsonb(base) - 'embedding' - 'fts') as row_json,
+        (
+          (to_jsonb(base) - 'embedding' - 'fts')
+          || jsonb_build_object(
+            'score',
+            (
+              coalesce(1.0 / (rrf_k + full_text.rank_ix), 0.0) * full_text_weight +
+              coalesce(1.0 / (rrf_k + semantic.rank_ix), 0.0) * semantic_weight
+            )
+          )
+        ) as row_json,
         (
           coalesce(1.0 / (rrf_k + full_text.rank_ix), 0.0) * full_text_weight +
           coalesce(1.0 / (rrf_k + semantic.rank_ix), 0.0) * semantic_weight
@@ -562,7 +580,16 @@ begin
         limit least(match_count, 30) * 2
       )
       select
-        (to_jsonb(base) - 'embedding' - 'fts') as row_json,
+        (
+          (to_jsonb(base) - 'embedding' - 'fts')
+          || jsonb_build_object(
+            'score',
+            (
+              coalesce(1.0 / (rrf_k + full_text.rank_ix), 0.0) * full_text_weight +
+              coalesce(1.0 / (rrf_k + semantic.rank_ix), 0.0) * semantic_weight
+            )
+          )
+        ) as row_json,
         (
           coalesce(1.0 / (rrf_k + full_text.rank_ix), 0.0) * full_text_weight +
           coalesce(1.0 / (rrf_k + semantic.rank_ix), 0.0) * semantic_weight

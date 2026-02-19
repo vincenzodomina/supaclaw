@@ -137,6 +137,7 @@ async function processProcessMessage(job: JobRow) {
         inboundId: inbound.id,
         inboundContent: inbound.content,
         telegramChatId,
+        tools: createAllTools(sessionId),
       });
       const { error: repairErr } = await supabase
         .from("messages")
