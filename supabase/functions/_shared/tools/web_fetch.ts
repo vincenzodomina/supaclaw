@@ -4,9 +4,9 @@ import { getConfigBoolean, getConfigString } from "../helpers.ts";
 import { logger } from "../logger.ts";
 import { uploadTextToWorkspace } from "../storage.ts";
 
-const MAX_DOWNLOAD_BYTES = 5 * 1024 * 1024; // 5MB
-const MAX_OUTPUT_BYTES = 50 * 1024; // 50KB
-const MAX_OUTPUT_LINES = 2000;
+const MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024; // 20MB
+const MAX_OUTPUT_BYTES = 250 * 1024; // 250KB
+const MAX_OUTPUT_LINES = 10000;
 const DEFAULT_TIMEOUT_SECONDS = 30;
 const MAX_TIMEOUT_SECONDS = 120;
 const MAX_REDIRECTS = 5;

@@ -5,6 +5,7 @@ import { editFileTool } from "./edit_file.ts";
 import { skillsTool } from "./skills.ts";
 import { createCronTool } from "./cron.ts";
 import { webFetchTool } from "./web_fetch.ts";
+import { webSearchTool } from "./web_search.ts";
 
 export { computeNextRun } from "./cron.ts";
 
@@ -15,6 +16,7 @@ export const tools = {
   edit_file: editFileTool,
   skills: skillsTool,
   web_fetch: webFetchTool,
+  web_search: webSearchTool,
 } as const;
 
 export function createAllTools(sessionId: string) {
