@@ -9,11 +9,20 @@ const MAX_OUTPUT_LINES = 2000;
 const DEFAULT_TIMEOUT_SECONDS = 30;
 const MAX_TIMEOUT_SECONDS = 120;
 const MAX_REDIRECTS = 5;
+const MAX_HTML_TURNDOWN_CHARS = 1_000_000;
+const MAX_HTML_ESTIMATED_NESTING_DEPTH = 3_000;
 
 type WebFetchArgs = {
   url: string;
   format?: "markdown" | "text" | "html";
   timeout_seconds?: number;
+};
+
+type Guard = {
+  allow: string[];
+  deny: string[];
+  dnsCache: Map<string, string[]>;
+  dnsCheck: boolean;
 };
 
 function parseHostPatterns(input: string | undefined): string[] {
@@ -88,7 +97,33 @@ function isPrivateIpv6(host: string): boolean {
   return false;
 }
 
-function validateTarget(url: URL): string | null {
+function isIpLiteralHost(host: string): boolean {
+  if (isIpv4Literal(host)) return true;
+  return normalizeIpv6(host).includes(":");
+}
+
+async function resolveHostIps(host: string, cache: Map<string, string[]>): Promise<string[]> {
+  const cached = cache.get(host);
+  if (cached) return cached;
+
+  const out = new Set<string>();
+  try {
+    for (const ip of await Deno.resolveDns(host, "A")) out.add(ip);
+  } catch {
+    // ignore
+  }
+  try {
+    for (const ip of await Deno.resolveDns(host, "AAAA")) out.add(ip);
+  } catch {
+    // ignore
+  }
+
+  const ips = [...out];
+  cache.set(host, ips);
+  return ips;
+}
+
+async function validateTarget(url: URL, guard: Guard): Promise<string | null> {
   if (url.username || url.password) return "URL must not include username/password";
   if (url.protocol !== "https:" && url.protocol !== "http:") {
     return "Only http(s) URLs are supported";
@@ -98,12 +133,22 @@ function validateTarget(url: URL): string | null {
   if (isPrivateIpv4(url.hostname)) return "Blocked private or local IP address";
   if (isPrivateIpv6(url.hostname)) return "Blocked private or local IP address";
 
-  const deny = parseHostPatterns(Deno.env.get("WEB_FETCH_DENYLIST"));
-  if (deny.some((p) => matchHost(url.hostname, p))) return "Blocked by denylist";
+  if (guard.deny.some((p) => matchHost(url.hostname, p))) return "Blocked by denylist";
 
-  const allow = parseHostPatterns(Deno.env.get("WEB_FETCH_ALLOWLIST"));
-  if (allow.length > 0 && !allow.some((p) => matchHost(url.hostname, p))) {
+  const hasAllowlist = guard.allow.length > 0;
+  if (hasAllowlist && !guard.allow.some((p) => matchHost(url.hostname, p))) {
     return "Blocked by allowlist";
+  }
+
+  if (guard.dnsCheck && !isIpLiteralHost(url.hostname)) {
+    const ips = await resolveHostIps(url.hostname, guard.dnsCache);
+    if (!ips.length) {
+      if (!hasAllowlist) return "DNS resolution failed";
+      return null;
+    }
+    if (ips.some((ip) => isPrivateIpv4(ip) || isPrivateIpv6(ip))) {
+      return "Blocked hostname resolved to private or local IP address";
+    }
   }
 
   return null;
@@ -151,6 +196,101 @@ function htmlTitle(html: string): string | null {
   return normalizeWhitespace(decodeHtmlEntities(stripTags(m[1] ?? ""))) || null;
 }
 
+function looksLikeHtml(value: string): boolean {
+  const head = value.trimStart().slice(0, 256).toLowerCase();
+  return head.startsWith("<!doctype html") || head.startsWith("<html");
+}
+
+function isHtmlMime(mime: string): boolean {
+  return mime === "text/html" || mime === "application/xhtml+xml";
+}
+
+function htmlToTextFast(html: string): string {
+  const cleaned = html
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<script\b[\s\S]*?<\/script>/gi, "")
+    .replace(/<style\b[\s\S]*?<\/style>/gi, "")
+    .replace(/<noscript\b[\s\S]*?<\/noscript>/gi, "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(
+      /<\/(p|div|section|article|header|footer|main|nav|aside|h[1-6]|li|tr|blockquote)>/gi,
+      "\n\n",
+    );
+  return normalizeWhitespace(decodeHtmlEntities(stripTags(cleaned)));
+}
+
+function exceedsEstimatedHtmlNestingDepth(html: string, maxDepth: number): boolean {
+  const voidTags = new Set([
+    "area",
+    "base",
+    "br",
+    "col",
+    "embed",
+    "hr",
+    "img",
+    "input",
+    "link",
+    "meta",
+    "param",
+    "source",
+    "track",
+    "wbr",
+  ]);
+
+  let depth = 0;
+  const len = html.length;
+  for (let i = 0; i < len; i++) {
+    if (html.charCodeAt(i) !== 60) continue; // '<'
+
+    const next = html.charCodeAt(i + 1);
+    if (next === 33 || next === 63) continue; // <! or <?
+
+    let j = i + 1;
+    let closing = false;
+    if (html.charCodeAt(j) === 47) {
+      closing = true;
+      j += 1;
+    }
+
+    while (j < len && html.charCodeAt(j) <= 32) j += 1;
+
+    const nameStart = j;
+    while (j < len) {
+      const c = html.charCodeAt(j);
+      const isNameChar =
+        (c >= 65 && c <= 90) ||
+        (c >= 97 && c <= 122) ||
+        (c >= 48 && c <= 57) ||
+        c === 58 ||
+        c === 45;
+      if (!isNameChar) break;
+      j += 1;
+    }
+
+    const tagName = html.slice(nameStart, j).toLowerCase();
+    if (!tagName) continue;
+
+    if (closing) {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+
+    if (voidTags.has(tagName)) continue;
+
+    let selfClosing = false;
+    for (let k = j; k < len && k < j + 200; k++) {
+      if (html.charCodeAt(k) !== 62) continue; // '>'
+      if (html.charCodeAt(k - 1) === 47) selfClosing = true;
+      break;
+    }
+    if (selfClosing) continue;
+
+    depth += 1;
+    if (depth > maxDepth) return true;
+  }
+  return false;
+}
+
 function resolveHref(href: string, base: URL): string {
   try {
     return new URL(href, base).toString();
@@ -168,6 +308,16 @@ function nodeAttr(node: unknown, name: string): string {
 
 function escapeMarkdownLink(url: string): string {
   return url.replace(/([()])/g, "\\$1");
+}
+
+function formatUrl(url: URL, includeQuery: boolean): string {
+  if (includeQuery) return url.toString();
+  const out = new URL(url.toString());
+  out.username = "";
+  out.password = "";
+  out.search = "";
+  out.hash = "";
+  return out.toString();
 }
 
 function markdownToText(markdown: string): string {
@@ -308,10 +458,11 @@ async function fetchWithRedirects(params: {
   url: URL;
   init: RequestInit;
   maxRedirects: number;
+  validate: (url: URL) => Promise<string | null>;
 }): Promise<{ response: Response; finalUrl: URL; redirects: number }> {
   let current = params.url;
   for (let i = 0; i <= params.maxRedirects; i++) {
-    const err = validateTarget(current);
+    const err = await params.validate(current);
     if (err) throw new Error(`Blocked URL: ${err}`);
 
     const res = await fetch(current.toString(), { ...params.init, redirect: "manual" });
@@ -322,6 +473,11 @@ async function fetchWithRedirects(params: {
       const loc = res.headers.get("location") ?? "";
       if (i >= params.maxRedirects) {
         throw new Error("Too many redirects");
+      }
+      try {
+        await res.body?.cancel();
+      } catch {
+        // ignore
       }
       current = new URL(loc, current);
       continue;
@@ -342,9 +498,11 @@ export const webFetchTool = tool({
     "",
     "Safety:",
     "- Blocks localhost/private IPv4 ranges and common internal hostnames.",
+    "- Resolves DNS A/AAAA and blocks private/local results (set WEB_FETCH_DNS_CHECK=false to disable).",
     "- Optional env allow/deny lists:",
     '  - WEB_FETCH_ALLOWLIST="example.com,*.example.com" (if set, only these hosts are allowed)',
     '  - WEB_FETCH_DENYLIST="bad.com,*.bad.com" (always blocked)',
+    "- Output URLs omit query/fragment by default (set WEB_FETCH_INCLUDE_QUERY=true to include).",
     "",
     "Large responses:",
     `- Max download: ${MAX_DOWNLOAD_BYTES} bytes.`,
@@ -361,6 +519,8 @@ export const webFetchTool = tool({
       },
       timeout_seconds: {
         type: "number",
+        minimum: 1,
+        maximum: MAX_TIMEOUT_SECONDS,
         description: "Timeout in seconds (max 120).",
       },
     },
@@ -385,7 +545,15 @@ export const webFetchTool = tool({
       if (parsed.port === "80") parsed.port = "";
     }
 
-    const targetErr = validateTarget(parsed);
+    const includeQuery = Deno.env.get("WEB_FETCH_INCLUDE_QUERY") === "true";
+    const guard: Guard = {
+      allow: parseHostPatterns(Deno.env.get("WEB_FETCH_ALLOWLIST")),
+      deny: parseHostPatterns(Deno.env.get("WEB_FETCH_DENYLIST")),
+      dnsCache: new Map(),
+      dnsCheck: Deno.env.get("WEB_FETCH_DNS_CHECK") !== "false",
+    };
+
+    const targetErr = await validateTarget(parsed, guard);
     if (targetErr) return { error: `Blocked URL: ${targetErr}` };
 
     const fmt = format ?? "markdown";
@@ -410,14 +578,15 @@ export const webFetchTool = tool({
         url: parsed,
         init,
         maxRedirects: MAX_REDIRECTS,
+        validate: (u) => validateTarget(u, guard),
       });
 
       const response = initial;
 
       if (!response.ok) {
         return {
-          url: parsed.toString(),
-          final_url: finalUrl.toString(),
+          url: formatUrl(parsed, includeQuery),
+          final_url: formatUrl(finalUrl, includeQuery),
           status: response.status,
           error: `Request failed with status ${response.status}`,
           redirects,
@@ -436,8 +605,8 @@ export const webFetchTool = tool({
 
       if (!isTextLike) {
         return {
-          url: parsed.toString(),
-          final_url: finalUrl.toString(),
+          url: formatUrl(parsed, includeQuery),
+          final_url: formatUrl(finalUrl, includeQuery),
           status: response.status,
           content_type: contentType,
           error: `Unsupported content-type: ${contentType || "(missing)"}`,
@@ -448,11 +617,16 @@ export const webFetchTool = tool({
       const { bytes, byteLength } = await readBodyLimited(response, MAX_DOWNLOAD_BYTES);
       const raw = new TextDecoder().decode(bytes);
 
-      const title = mime.includes("html") ? (htmlTitle(raw) ?? null) : null;
+      const isHtml = isHtmlMime(mime) || looksLikeHtml(raw);
+      const title = isHtml ? (htmlTitle(raw) ?? null) : null;
 
       const fullContent = (() => {
-        if (!mime.includes("html")) return raw;
+        if (!isHtml) return raw;
         if (fmt === "html") return raw;
+        const ok = raw.length <= MAX_HTML_TURNDOWN_CHARS &&
+          !exceedsEstimatedHtmlNestingDepth(raw, MAX_HTML_ESTIMATED_NESTING_DEPTH);
+        if (!ok) return htmlToTextFast(raw);
+
         const md = htmlToMarkdown(raw, finalUrl);
         if (fmt === "text") return markdownToText(md);
         return md;
@@ -485,8 +659,8 @@ export const webFetchTool = tool({
         : truncated.content;
 
       return {
-        url: parsed.toString(),
-        final_url: finalUrl.toString(),
+        url: formatUrl(parsed, includeQuery),
+        final_url: formatUrl(finalUrl, includeQuery),
         status: response.status,
         content_type: contentType,
         title,
@@ -501,7 +675,7 @@ export const webFetchTool = tool({
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       logger.warn("tool.web_fetch.error", { error: e, message: msg });
-      return { url: parsed.toString(), error: `web_fetch error: ${msg}` };
+      return { url: formatUrl(parsed, includeQuery), error: `web_fetch error: ${msg}` };
     } finally {
       clearTimeout(timer);
     }
