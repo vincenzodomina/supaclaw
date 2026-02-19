@@ -4,6 +4,10 @@
   "llms.agent.provider": "openai",
   "llms.embedding.model": "gte-small",
   "llms.embedding.provider": "supabase",
+  "tools.web_fetch.include_query": false,
+  "tools.web_fetch.allowlist": "",
+  "tools.web_fetch.denylist": "",
+  "tools.web_fetch.dns_check": true,
   "channels.telegram.enabled": true,
   "channels.telegram.show_tool_calls": true
 }

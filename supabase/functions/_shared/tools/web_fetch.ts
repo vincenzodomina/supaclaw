@@ -1,5 +1,6 @@
 import { jsonSchema, tool } from "ai";
 import TurndownService from "turndown";
+import { getConfigBoolean, getConfigString } from "../helpers.ts";
 import { logger } from "../logger.ts";
 import { uploadTextToWorkspace } from "../storage.ts";
 
@@ -498,11 +499,11 @@ export const webFetchTool = tool({
     "",
     "Safety:",
     "- Blocks localhost/private IPv4 ranges and common internal hostnames.",
-    "- Resolves DNS A/AAAA and blocks private/local results (set WEB_FETCH_DNS_CHECK=false to disable).",
+    "- Resolves DNS A/AAAA and blocks private/local results (set tools.web_fetch.dns_check=false in config to disable).",
     "- Optional env allow/deny lists:",
-    '  - WEB_FETCH_ALLOWLIST="example.com,*.example.com" (if set, only these hosts are allowed)',
-    '  - WEB_FETCH_DENYLIST="bad.com,*.bad.com" (always blocked)',
-    "- Output URLs omit query/fragment by default (set WEB_FETCH_INCLUDE_QUERY=true to include).",
+    '  - tools.web_fetch.allowlist: "example.com,*.example.com" (if set, only these hosts are allowed)',
+    '  - tools.web_fetch.denylist: "bad.com,*.bad.com" (always blocked)',
+    "- Output URLs omit query/fragment by default (set tools.web_fetch.include_query=true in config to include).",
     "",
     "Large responses:",
     `- Max download: ${MAX_DOWNLOAD_BYTES} bytes.`,
@@ -538,19 +539,18 @@ export const webFetchTool = tool({
       return { error: "Invalid URL: must be fully qualified (e.g. https://example.com)" };
     }
 
-    const upgradeHttp = Deno.env.get("WEB_FETCH_UPGRADE_HTTP") !== "false";
-    const upgraded = upgradeHttp && parsed.protocol === "http:";
+    const upgraded = parsed.protocol === "http:";
     if (upgraded) {
       parsed.protocol = "https:";
       if (parsed.port === "80") parsed.port = "";
     }
 
-    const includeQuery = Deno.env.get("WEB_FETCH_INCLUDE_QUERY") === "true";
+    const includeQuery = getConfigBoolean("tools.web_fetch.include_query") === true;
     const guard: Guard = {
-      allow: parseHostPatterns(Deno.env.get("WEB_FETCH_ALLOWLIST")),
-      deny: parseHostPatterns(Deno.env.get("WEB_FETCH_DENYLIST")),
+      allow: parseHostPatterns(getConfigString("tools.web_fetch.allowlist")),
+      deny: parseHostPatterns(getConfigString("tools.web_fetch.denylist")),
       dnsCache: new Map(),
-      dnsCheck: Deno.env.get("WEB_FETCH_DNS_CHECK") !== "false",
+      dnsCheck: getConfigBoolean("tools.web_fetch.dns_check") !== false,
     };
 
     const targetErr = await validateTarget(parsed, guard);
