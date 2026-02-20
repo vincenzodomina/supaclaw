@@ -16,12 +16,11 @@ import {
   type TelegramStreamMode,
 } from "../_shared/telegram.ts";
 import { logger } from "../_shared/logger.ts";
-import { buildInputMessages } from "../_shared/context.ts";
 import {
-  generateLLMResponse,
+  runAgent,
   type ToolSet,
   type ToolStreamEvent,
-} from "../_shared/llm.ts";
+} from "../_shared/agent.ts";
 import { embedText } from "../_shared/embeddings.ts";
 import { computeNextRun, createAllTools } from "../_shared/tools/index.ts";
 
@@ -133,7 +132,7 @@ async function processProcessMessage(job: JobRow) {
         replyId: existingReply.id,
         inboundId: inbound.id,
       });
-      textToDeliver = await runAgent({
+      textToDeliver = await runAgentHandler({
         jobId: job.id,
         sessionId,
         inboundId: inbound.id,
@@ -195,7 +194,7 @@ async function processProcessMessage(job: JobRow) {
     throw new Error(`Failed to persist assistant message: ${saveErr.message}`);
   }
 
-  const reply = await runAgent({
+  const reply = await runAgentHandler({
     jobId: job.id,
     sessionId,
     inboundId: inbound.id,
@@ -236,7 +235,7 @@ async function processProcessMessage(job: JobRow) {
   });
 }
 
-async function runAgent(params: {
+async function runAgentHandler(params: {
   jobId: number;
   sessionId: string;
   inboundId: number;
@@ -245,10 +244,6 @@ async function runAgent(params: {
   tools?: ToolSet;
   streamMode?: TelegramStreamMode;
 }) {
-  const messages = await buildInputMessages({
-    sessionId: params.sessionId,
-  });
-
   // Tool-call stream handler: persist each tool call as a timeline row + optional Telegram rendering
   const showToolCalls =
     getConfigBoolean("channels.telegram.show_tool_calls") === true;
@@ -350,8 +345,8 @@ async function runAgent(params: {
     typingInterval = setInterval(sendTyping, 4_000);
   }
   try {
-    rawReply = await generateLLMResponse({
-      messages,
+    rawReply = await runAgent({
+      sessionId: params.sessionId,
       onToolEvent,
       tools: params.tools,
       onTextDelta: async (_delta, fullText) => {
@@ -483,7 +478,7 @@ async function processRunTask(job: JobRow) {
     .single();
   if (saveErr) throw new Error(`Failed to persist reply: ${saveErr.message}`);
 
-  const reply = await runAgent({
+  const reply = await runAgentHandler({
     jobId: job.id,
     sessionId,
     inboundId: msg.id,

@@ -1,8 +1,12 @@
 import { createServiceClient } from "../_shared/supabase.ts";
 import { buildSkillsInstructionsBlock } from "./skills.ts";
-import { type ChatMessage } from "./llm.ts";
 import { downloadTextFromWorkspace } from "./storage.ts";
 import { getConfigNumber } from "./helpers.ts";
+
+export type ChatMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+};
 
 type RecentMessage = {
   role: "system" | "user" | "assistant";

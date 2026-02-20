@@ -2,6 +2,8 @@ import { stepCountIs, streamText } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
+//import { createServiceClient } from "./supabase.ts";
+import { buildInputMessages } from "./context.ts";
 import { tools as defaultTools } from "./tools/index.ts";
 import { getConfigNumber } from "./helpers.ts";
 import { logger } from "./logger.ts";
@@ -9,11 +11,6 @@ import { logger } from "./logger.ts";
 export type LLMProvider = "openai" | "anthropic" | "google";
 
 export type ToolSet = Parameters<typeof streamText>[0]["tools"];
-
-export type ChatMessage = {
-  role: "system" | "user" | "assistant";
-  content: string;
-};
 
 export type ToolStreamEvent =
   | {
@@ -60,8 +57,8 @@ function resolveProviderModel(provider: LLMProvider, model?: string) {
   }
 }
 
-export async function generateLLMResponse({
-  messages,
+export async function runAgent({
+  sessionId,
   provider = "openai",
   model,
   maxSteps = getConfigNumber("agent.max_steps") ?? 5,
@@ -69,7 +66,7 @@ export async function generateLLMResponse({
   onToolEvent,
   onTextDelta,
 }: {
-  messages: ChatMessage[];
+  sessionId: string;
   provider?: LLMProvider;
   model?: string;
   maxSteps?: number;
@@ -77,42 +74,52 @@ export async function generateLLMResponse({
   onToolEvent?: (event: ToolStreamEvent) => void | Promise<void>;
   onTextDelta?: (delta: string, fullText: string) => void | Promise<void>;
 }): Promise<string> {
-  const providerModel = resolveProviderModel(provider, model);
+  //const supabase = createServiceClient();
 
-  const result = streamText({
-    model: providerModel,
-    messages,
-    tools: tools ?? defaultTools,
-    ...(provider !== "openai" ? { maxOutputTokens: 800 } : {}),
-    stopWhen: stepCountIs(maxSteps),
-  });
+  try {
+    const providerModel = resolveProviderModel(provider, model);
 
-  let text = "";
-  for await (const part of result.fullStream) {
-    switch (part.type) {
-      case "text-delta":
-        text += part.text;
-        await onTextDelta?.(part.text, text);
-        break;
-      case "tool-call":
-        await onToolEvent?.({
-          type: "tool-call-start",
-          toolCallId: part.toolCallId,
-          toolName: part.toolName,
-          args: part.input as Record<string, unknown>,
-        });
-        break;
-      case "tool-result":
-        await onToolEvent?.({
-          type: "tool-call-done",
-          toolCallId: part.toolCallId,
-          toolName: part.toolName,
-          result: part.output,
-        });
-        break;
+    const messages = await buildInputMessages({
+      sessionId,
+    });
+
+    const result = streamText({
+      model: providerModel,
+      messages,
+      tools: tools ?? defaultTools,
+      ...(provider !== "openai" ? { maxOutputTokens: 800 } : {}),
+      stopWhen: stepCountIs(maxSteps),
+    });
+
+    let text = "";
+    for await (const part of result.fullStream) {
+      switch (part.type) {
+        case "text-delta":
+          text += part.text;
+          await onTextDelta?.(part.text, text);
+          break;
+        case "tool-call":
+          await onToolEvent?.({
+            type: "tool-call-start",
+            toolCallId: part.toolCallId,
+            toolName: part.toolName,
+            args: part.input as Record<string, unknown>,
+          });
+          break;
+        case "tool-result":
+          await onToolEvent?.({
+            type: "tool-call-done",
+            toolCallId: part.toolCallId,
+            toolName: part.toolName,
+            result: part.output,
+          });
+          break;
+      }
     }
-  }
 
-  logger.debug("llm.generateLLMResponse", { textLength: text.length });
-  return text.trim();
+    logger.debug("llm.runAgent", { textLength: text.length });
+    return text.trim();
+  } catch (err) {
+    throw err;
+  }
 }
