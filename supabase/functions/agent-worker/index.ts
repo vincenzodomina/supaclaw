@@ -1,25 +1,31 @@
 import { createServiceClient } from "../_shared/supabase.ts";
-import { mustGetEnv, timingSafeEqual, getConfigBoolean, jsonResponse, textResponse } from "../_shared/helpers.ts";
+import {
+  getConfigBoolean,
+  jsonResponse,
+  mustGetEnv,
+  textResponse,
+  timingSafeEqual,
+} from "../_shared/helpers.ts";
 import {
   createTelegramDraftStream,
   TELEGRAM_STREAM_PARAMS,
   telegramEditMessageText,
+  telegramSendChatAction,
   telegramSendChunkedMessage,
   telegramSendMessage,
-  telegramSendChatAction,
   type TelegramStreamMode,
 } from "../_shared/telegram.ts";
 import { logger } from "../_shared/logger.ts";
+import { buildSystemPrompt } from "../_shared/context.ts";
 import {
-  buildSystemPrompt,
   type ChatMessage,
+  generateAgentReply,
   type ToolSet,
   type ToolStreamEvent,
-  generateAgentReply,
 } from "../_shared/llm.ts";
 import { downloadTextFromWorkspace } from "../_shared/storage.ts";
 import { embedText } from "../_shared/embeddings.ts";
-import { createAllTools, computeNextRun } from "../_shared/tools/index.ts";
+import { computeNextRun, createAllTools } from "../_shared/tools/index.ts";
 
 type JobRow = {
   id: number;
@@ -273,14 +279,17 @@ async function buildAssistantReply(params: {
       jobId: params.jobId,
       inboundId: params.inboundId,
     });
-    const { data: hybrid, error: memErr } = await supabase.rpc("hybrid_search", {
-      query_text: params.inboundContent,
-      query_embedding: queryEmbedding,
-      match_count: 30,
-      search_tables: ["memories"],
-      filter_type: ["pinned_fact", "summary"],
-      filter_session_id: null,
-    });
+    const { data: hybrid, error: memErr } = await supabase.rpc(
+      "hybrid_search",
+      {
+        query_text: params.inboundContent,
+        query_embedding: queryEmbedding,
+        match_count: 30,
+        search_tables: ["memories"],
+        filter_type: ["pinned_fact", "summary"],
+        filter_session_id: null,
+      },
+    );
     if (memErr) {
       throw new Error(`hybrid_search failed: ${memErr.message}`);
     }
@@ -349,9 +358,13 @@ async function buildAssistantReply(params: {
   ];
 
   // Tool-call stream handler: persist each tool call as a timeline row + optional Telegram rendering
-  const showToolCalls = getConfigBoolean("channels.telegram.show_tool_calls") === true;
+  const showToolCalls =
+    getConfigBoolean("channels.telegram.show_tool_calls") === true;
   let toolSeq = 0;
-  const toolState = new Map<string, { rowId: number; tgMsgId?: string; toolName: string; startedAt: number }>();
+  const toolState = new Map<
+    string,
+    { rowId: number; tgMsgId?: string; toolName: string; startedAt: number }
+  >();
 
   const onToolEvent = async (event: ToolStreamEvent) => {
     if (event.type === "tool-call-start") {
@@ -383,7 +396,10 @@ async function buildAssistantReply(params: {
           });
           if (tgMsgId) {
             await supabase.from("messages")
-              .update({ telegram_message_id: tgMsgId, telegram_sent_at: new Date().toISOString() })
+              .update({
+                telegram_message_id: tgMsgId,
+                telegram_sent_at: new Date().toISOString(),
+              })
               .eq("id", data.id);
           }
         } catch (e) {
@@ -391,7 +407,12 @@ async function buildAssistantReply(params: {
         }
       }
 
-      toolState.set(event.toolCallId, { rowId: data.id, toolName: event.toolName, startedAt: Date.now(), tgMsgId });
+      toolState.set(event.toolCallId, {
+        rowId: data.id,
+        toolName: event.toolName,
+        startedAt: Date.now(),
+        tgMsgId,
+      });
     } else {
       const state = toolState.get(event.toolCallId);
       if (!state) return;
@@ -407,7 +428,9 @@ async function buildAssistantReply(params: {
           chatId: params.telegramChatId,
           messageId: state.tgMsgId,
           text: `${event.toolName} — succeeded`,
-        }).catch((e: unknown) => logger.warn("tool-call.telegram_edit_failed", { error: e }));
+        }).catch((e: unknown) =>
+          logger.warn("tool-call.telegram_edit_failed", { error: e })
+        );
       }
     }
   };
@@ -427,7 +450,10 @@ async function buildAssistantReply(params: {
   let typingInterval: ReturnType<typeof setInterval> | undefined;
   if (draft) {
     const sendTyping = () =>
-      telegramSendChatAction({ chatId: params.telegramChatId, action: "typing" }).catch(() => {});
+      telegramSendChatAction({
+        chatId: params.telegramChatId,
+        action: "typing",
+      }).catch(() => {});
     sendTyping();
     typingInterval = setInterval(sendTyping, 4_000);
   }
@@ -447,11 +473,17 @@ async function buildAssistantReply(params: {
     const errMsg = err instanceof Error ? err.message : String(err);
     for (const [, s] of toolState) {
       await supabase.from("messages")
-        .update({ tool_status: "failed", tool_error: errMsg, tool_duration_ms: Date.now() - s.startedAt })
+        .update({
+          tool_status: "failed",
+          tool_error: errMsg,
+          tool_duration_ms: Date.now() - s.startedAt,
+        })
         .eq("id", s.rowId).eq("tool_status", "started");
       if (showToolCalls && s.tgMsgId) {
         telegramEditMessageText({
-          chatId: params.telegramChatId, messageId: s.tgMsgId, text: `${s.toolName} — failed`,
+          chatId: params.telegramChatId,
+          messageId: s.tgMsgId,
+          text: `${s.toolName} — failed`,
         }).catch(() => {});
       }
     }
@@ -509,7 +541,9 @@ async function processRunTask(job: JobRow) {
   const sessionId = job.payload.session_id as string;
   const taskType = (job.payload.task_type as string) || "reminder";
 
-  if (!taskId || !prompt || !sessionId) throw new Error("Invalid run_task payload");
+  if (!taskId || !prompt || !sessionId) {
+    throw new Error("Invalid run_task payload");
+  }
 
   logger.info("job.run_task.start", { jobId: job.id, taskId, taskType });
 
@@ -538,7 +572,9 @@ async function processRunTask(job: JobRow) {
     })
     .select("id")
     .single();
-  if (msgErr) throw new Error(`Failed to insert task message: ${msgErr.message}`);
+  if (msgErr) {
+    throw new Error(`Failed to insert task message: ${msgErr.message}`);
+  }
 
   const { data: saved, error: saveErr } = await supabase
     .from("messages")
@@ -583,12 +619,20 @@ async function processRunTask(job: JobRow) {
     .update({ telegram_sent_at: new Date().toISOString() })
     .eq("id", saved.id);
   if (deliveredErr) {
-    logger.warn("job.run_task.mark_delivered_failed", { jobId: job.id, replyId: saved.id, error: deliveredErr });
+    logger.warn("job.run_task.mark_delivered_failed", {
+      jobId: job.id,
+      replyId: saved.id,
+      error: deliveredErr,
+    });
   }
 
   await updateTaskAfterRun(taskId);
 
-  logger.info("job.run_task.done", { jobId: job.id, taskId, replyId: saved.id });
+  logger.info("job.run_task.done", {
+    jobId: job.id,
+    taskId,
+    replyId: saved.id,
+  });
 }
 
 function processTrigger(job: JobRow) {
