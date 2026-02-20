@@ -60,7 +60,7 @@ function resolveProviderModel(provider: LLMProvider, model?: string) {
   }
 }
 
-export async function generateAgentReply({
+export async function generateLLMResponse({
   messages,
   provider = "openai",
   model,
@@ -113,6 +113,6 @@ export async function generateAgentReply({
     }
   }
 
-  logger.debug("llm.generateAgentReply", { textLength: text.length });
+  logger.debug("llm.generateLLMResponse", { textLength: text.length });
   return text.trim();
 }

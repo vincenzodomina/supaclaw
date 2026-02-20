@@ -1,56 +1,60 @@
+import { createServiceClient } from "../_shared/supabase.ts";
 import { buildSkillsInstructionsBlock } from "./skills.ts";
+import { type ChatMessage } from "./llm.ts";
+import { downloadTextFromWorkspace } from "./storage.ts";
+import { getConfigNumber } from "./helpers.ts";
 
-export async function buildSystemPrompt(params: {
-  agents?: string;
-  soul?: string;
-  identity?: string;
-  user?: string;
-  bootstrap?: string;
-  heartbeat?: string;
-  tools?: string;
-  memory?: string;
-  memories?: string[];
-}) {
+type RecentMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+};
+
+async function buildSystemPrompt(): Promise<string> {
+  const [agents, soul, identity, user, bootstrap, heartbeat, tools, memory] =
+    await Promise.all([
+      downloadTextFromWorkspace(".agents/AGENTS.md", { optional: true }),
+      downloadTextFromWorkspace(".agents/SOUL.md", { optional: true }),
+      downloadTextFromWorkspace(".agents/IDENTITY.md", { optional: true }),
+      downloadTextFromWorkspace(".agents/USER.md", { optional: true }),
+      downloadTextFromWorkspace(".agents/BOOTSTRAP.md", { optional: true }),
+      downloadTextFromWorkspace(".agents/HEARTBEAT.md", { optional: true }),
+      downloadTextFromWorkspace(".agents/TOOLS.md", { optional: true }),
+      downloadTextFromWorkspace(".agents/MEMORY.md", { optional: true }),
+    ]);
+
   const parts: string[] = [];
   parts.push("You are SupaClaw, a cloud-native personal agent.");
 
-  if (params.agents?.trim()) {
-    parts.push("\n## AGENTS\n" + params.agents.trim());
+  if (agents?.trim()) {
+    parts.push("\n## AGENTS\n" + agents?.trim());
   }
 
-  if (params.soul?.trim()) {
-    parts.push("\n## SOUL\n" + params.soul.trim());
+  if (soul?.trim()) {
+    parts.push("\n## SOUL\n" + soul?.trim());
   }
 
-  if (params.identity?.trim()) {
-    parts.push("\n## IDENTITY\n" + params.identity.trim());
+  if (identity?.trim()) {
+    parts.push("\n## IDENTITY\n" + identity?.trim());
   }
 
-  if (params.user?.trim()) {
-    parts.push("\n## USER\n" + params.user.trim());
+  if (user?.trim()) {
+    parts.push("\n## USER\n" + user?.trim());
   }
 
-  if (params.bootstrap?.trim()) {
-    parts.push("\n## BOOTSTRAP\n" + params.bootstrap.trim());
+  if (bootstrap?.trim()) {
+    parts.push("\n## BOOTSTRAP\n" + bootstrap?.trim());
   }
 
-  if (params.heartbeat?.trim()) {
-    parts.push("\n## HEARTBEAT\n" + params.heartbeat.trim());
+  if (heartbeat?.trim()) {
+    parts.push("\n## HEARTBEAT\n" + heartbeat?.trim());
   }
 
-  if (params.memories?.length) {
-    parts.push(
-      "\n## MEMORY (retrieved from memory tool)\n" +
-        params.memories.map((m) => `- ${m}`).join("\n"),
-    );
+  if (memory?.trim()) {
+    parts.push("\n## MEMORY (long term from MEMORY.md)\n" + memory?.trim());
   }
 
-  if (params.memory?.trim()) {
-    parts.push("\n## MEMORY (long term from MEMORY.md)\n" + params.memory.trim());
-  }
-
-  if (params.tools?.trim()) {
-    parts.push("\n## TOOLS\n" + params.tools.trim());
+  if (tools?.trim()) {
+    parts.push("\n## TOOLS\n" + tools?.trim());
   }
 
   const skillsBlock = await buildSkillsInstructionsBlock().catch(() => "");
@@ -59,4 +63,40 @@ export async function buildSystemPrompt(params: {
   }
 
   return parts.join("\n");
+}
+
+
+export async function buildInputMessages({
+  sessionId,
+}: {
+  sessionId: string;
+}): Promise<ChatMessage[]> {
+  const supabase = createServiceClient();
+  const latestMessagesCount = getConfigNumber("agent.latest_messages_count") ?? 20;
+
+  const systemPrompt = await buildSystemPrompt();
+
+  // Build short chat context (last N messages).
+  // Query newest first for index efficiency, then reverse for chronological model input.
+  const { data: recent, error: recentErr } = await supabase
+    .from("messages")
+    .select("role, content")
+    .eq("session_id", sessionId)
+    .eq("type", "text")
+    .in("role", ["user", "assistant"])
+    .order("created_at", { ascending: false })
+    .limit(latestMessagesCount);
+  if (recentErr) {
+    throw new Error(`Failed to load recent messages: ${recentErr.message}`);
+  }
+
+  const messages: ChatMessage[] = [
+    { role: "system", content: systemPrompt },
+    ...(recent ?? []).reverse().map((m: RecentMessage) => ({
+      role: m.role,
+      content: m.content,
+    })),
+  ];
+
+  return messages;
 }

@@ -16,14 +16,12 @@ import {
   type TelegramStreamMode,
 } from "../_shared/telegram.ts";
 import { logger } from "../_shared/logger.ts";
-import { buildSystemPrompt } from "../_shared/context.ts";
+import { buildInputMessages } from "../_shared/context.ts";
 import {
-  type ChatMessage,
-  generateAgentReply,
+  generateLLMResponse,
   type ToolSet,
   type ToolStreamEvent,
 } from "../_shared/llm.ts";
-import { downloadTextFromWorkspace } from "../_shared/storage.ts";
 import { embedText } from "../_shared/embeddings.ts";
 import { computeNextRun, createAllTools } from "../_shared/tools/index.ts";
 
@@ -31,17 +29,6 @@ type JobRow = {
   id: number;
   type: string;
   payload: Record<string, unknown>;
-};
-
-type MemoryCandidate = {
-  type: "pinned_fact" | "summary";
-  content: string;
-  session_id: string | null;
-};
-
-type RecentMessage = {
-  role: "system" | "user" | "assistant";
-  content: string;
 };
 
 const supabase = createServiceClient();
@@ -258,104 +245,9 @@ async function buildAssistantReply(params: {
   tools?: ToolSet;
   streamMode?: TelegramStreamMode;
 }) {
-  const [agents, soul, identity, user, bootstrap, heartbeat, tools, memory] =
-    await Promise.all([
-      downloadTextFromWorkspace(".agents/AGENTS.md", { optional: true }),
-      downloadTextFromWorkspace(".agents/SOUL.md", { optional: true }),
-      downloadTextFromWorkspace(".agents/IDENTITY.md", { optional: true }),
-      downloadTextFromWorkspace(".agents/USER.md", { optional: true }),
-      downloadTextFromWorkspace(".agents/BOOTSTRAP.md", { optional: true }),
-      downloadTextFromWorkspace(".agents/HEARTBEAT.md", { optional: true }),
-      downloadTextFromWorkspace(".agents/TOOLS.md", { optional: true }),
-      downloadTextFromWorkspace(".agents/MEMORY.md", { optional: true }),
-    ]);
-
-  // Memory retrieval in one query (pinned facts + summaries), then split by type.
-  // We fetch a slightly larger candidate pool to preserve quality after filtering.
-  let memoryCandidates: MemoryCandidate[] = [];
-  try {
-    const queryEmbedding = await embedText(params.inboundContent);
-    logger.debug("job.process_message.embedding_ready", {
-      jobId: params.jobId,
-      inboundId: params.inboundId,
-    });
-    const { data: hybrid, error: memErr } = await supabase.rpc(
-      "hybrid_search",
-      {
-        query_text: params.inboundContent,
-        query_embedding: queryEmbedding,
-        match_count: 30,
-        search_tables: ["memories"],
-        filter_type: ["pinned_fact", "summary"],
-        filter_session_id: null,
-      },
-    );
-    if (memErr) {
-      throw new Error(`hybrid_search failed: ${memErr.message}`);
-    }
-    memoryCandidates = (hybrid?.memories ?? []) as MemoryCandidate[];
-  } catch (error) {
-    logger.warn("job.process_message.memory_search_failed", {
-      jobId: params.jobId,
-      inboundId: params.inboundId,
-      message: error instanceof Error ? error.message : String(error),
-      error,
-    });
-  }
-
-  const pinnedFacts: MemoryCandidate[] = [];
-  const summaries: MemoryCandidate[] = [];
-  for (const memory of memoryCandidates) {
-    if (memory.type === "pinned_fact" && pinnedFacts.length < 5) {
-      pinnedFacts.push(memory);
-      continue;
-    }
-    if (
-      memory.type === "summary" && memory.session_id === params.sessionId &&
-      summaries.length < 5
-    ) {
-      summaries.push(memory);
-    }
-    if (pinnedFacts.length >= 5 && summaries.length >= 5) break;
-  }
-
-  const memoryStrings = [...pinnedFacts, ...summaries].map((m) =>
-    `[${m.type}] ${m.content}`
-  );
-
-  const system = await buildSystemPrompt({
-    agents: agents ?? undefined,
-    soul: soul ?? undefined,
-    identity: identity ?? undefined,
-    user: user ?? undefined,
-    bootstrap: bootstrap ?? undefined,
-    heartbeat: heartbeat ?? undefined,
-    tools: tools ?? undefined,
-    memory: memory ?? undefined,
-    memories: memoryStrings,
+  const messages = await buildInputMessages({
+    sessionId: params.sessionId,
   });
-
-  // Build short chat context (last N messages).
-  // Query newest first for index efficiency, then reverse for chronological model input.
-  const { data: recent, error: recentErr } = await supabase
-    .from("messages")
-    .select("role, content")
-    .eq("session_id", params.sessionId)
-    .eq("type", "text")
-    .in("role", ["user", "assistant"])
-    .order("created_at", { ascending: false })
-    .limit(20);
-  if (recentErr) {
-    throw new Error(`Failed to load recent messages: ${recentErr.message}`);
-  }
-
-  const messages: ChatMessage[] = [
-    { role: "system", content: system },
-    ...(recent ?? []).reverse().map((m: RecentMessage) => ({
-      role: m.role,
-      content: m.content,
-    })),
-  ];
 
   // Tool-call stream handler: persist each tool call as a timeline row + optional Telegram rendering
   const showToolCalls =
@@ -458,7 +350,7 @@ async function buildAssistantReply(params: {
     typingInterval = setInterval(sendTyping, 4_000);
   }
   try {
-    rawReply = await generateAgentReply({
+    rawReply = await generateLLMResponse({
       messages,
       onToolEvent,
       tools: params.tools,
@@ -497,7 +389,6 @@ async function buildAssistantReply(params: {
     logger.warn("job.process_message.reply_empty", {
       jobId: params.jobId,
       inboundId: params.inboundId,
-      recentCount: recent?.length ?? 0,
     });
     if (draft) await draft.finalize(FALLBACK_REPLY);
     return FALLBACK_REPLY;
