@@ -1,6 +1,14 @@
 import { createServiceClient } from "../_shared/supabase.ts";
 import { mustGetEnv, timingSafeEqual, getConfigBoolean, jsonResponse, textResponse } from "../_shared/helpers.ts";
-import { telegramSendMessage, telegramEditMessageText } from "../_shared/telegram.ts";
+import {
+  createTelegramDraftStream,
+  TELEGRAM_STREAM_PARAMS,
+  telegramEditMessageText,
+  telegramSendChunkedMessage,
+  telegramSendMessage,
+  telegramSendChatAction,
+  type TelegramStreamMode,
+} from "../_shared/telegram.ts";
 import { logger } from "../_shared/logger.ts";
 import {
   buildSystemPrompt,
@@ -33,6 +41,7 @@ type RecentMessage = {
 const supabase = createServiceClient();
 const FALLBACK_REPLY =
   "I hit a temporary issue generating a response. Please try again in a moment.";
+const MESSAGE_STREAM_MODE: TelegramStreamMode = TELEGRAM_STREAM_PARAMS.mode;
 
 function isAuthorized(req: Request) {
   const expected = mustGetEnv("WORKER_SECRET");
@@ -150,7 +159,7 @@ async function processProcessMessage(job: JobRow) {
       }
     }
 
-    await telegramSendMessage({
+    await telegramSendChunkedMessage({
       chatId: existingChatId,
       text: textToDeliver,
     });
@@ -174,16 +183,7 @@ async function processProcessMessage(job: JobRow) {
     return;
   }
 
-  const reply = await buildAssistantReply({
-    jobId: job.id,
-    sessionId,
-    inboundId: inbound.id,
-    inboundContent: inbound.content,
-    telegramChatId,
-    tools: createAllTools(sessionId),
-  });
-
-  // Persist assistant message before delivery; retries will deliver pending messages.
+  // Persist assistant placeholder before delivery; retries can repair/resend this row.
   const { data: savedReply, error: saveErr } = await supabase
     .from("messages")
     .insert({
@@ -191,7 +191,7 @@ async function processProcessMessage(job: JobRow) {
       reply_to_message_id: inbound.id,
       role: "assistant",
       type: "text",
-      content: reply,
+      content: "",
       provider: "telegram",
       telegram_chat_id: telegramChatId,
       telegram_sent_at: null,
@@ -202,7 +202,28 @@ async function processProcessMessage(job: JobRow) {
     throw new Error(`Failed to persist assistant message: ${saveErr.message}`);
   }
 
-  await telegramSendMessage({ chatId: telegramChatId, text: reply });
+  const reply = await buildAssistantReply({
+    jobId: job.id,
+    sessionId,
+    inboundId: inbound.id,
+    inboundContent: inbound.content,
+    telegramChatId,
+    tools: createAllTools(sessionId),
+    streamMode: MESSAGE_STREAM_MODE,
+  });
+
+  const { error: contentErr } = await supabase
+    .from("messages")
+    .update({ content: reply })
+    .eq("id", savedReply.id);
+  if (contentErr) {
+    // Warn-only: reply is already delivered; retrying would likely duplicate delivery.
+    logger.warn("job.process_message.update_content_failed", {
+      jobId: job.id,
+      replyId: savedReply.id,
+      error: contentErr,
+    });
+  }
 
   const { error: deliveredErr } = await supabase
     .from("messages")
@@ -229,6 +250,7 @@ async function buildAssistantReply(params: {
   inboundContent: string;
   telegramChatId: string;
   tools?: ToolSet;
+  streamMode?: TelegramStreamMode;
 }) {
   const [agents, soul, identity, user, bootstrap, heartbeat, tools, memory] =
     await Promise.all([
@@ -391,9 +413,32 @@ async function buildAssistantReply(params: {
   };
 
   let rawReply: string;
+  const draft = params.streamMode
+    ? createTelegramDraftStream({
+      chatId: params.telegramChatId,
+      mode: params.streamMode,
+      throttleMs: TELEGRAM_STREAM_PARAMS.throttleMs,
+      minInitialChars: TELEGRAM_STREAM_PARAMS.minInitialChars,
+      textLimit: TELEGRAM_STREAM_PARAMS.textLimit,
+      chunkSoftLimit: TELEGRAM_STREAM_PARAMS.chunkSoftLimit,
+      blockMinChars: TELEGRAM_STREAM_PARAMS.blockMinChars,
+    })
+    : null;
+  if (draft) {
+    telegramSendChatAction({ chatId: params.telegramChatId, action: "typing" }).catch(() => {});
+  }
   try {
-    rawReply = await generateAgentReply({ messages, onToolEvent, tools: params.tools });
+    rawReply = await generateAgentReply({
+      messages,
+      onToolEvent,
+      tools: params.tools,
+      onTextDelta: async (_delta, fullText) => {
+        if (!draft) return;
+        await draft.update(fullText);
+      },
+    });
   } catch (err) {
+    if (draft) await draft.clearDraft();
     // Mark any pending tool calls as failed
     const errMsg = err instanceof Error ? err.message : String(err);
     for (const [, s] of toolState) {
@@ -416,8 +461,10 @@ async function buildAssistantReply(params: {
       inboundId: params.inboundId,
       recentCount: recent?.length ?? 0,
     });
+    if (draft) await draft.finalize(FALLBACK_REPLY);
     return FALLBACK_REPLY;
   }
+  if (draft) await draft.finalize(reply);
   logger.debug("job.process_message.reply_generated", {
     jobId: params.jobId,
     replyLength: reply.length,
@@ -487,15 +534,6 @@ async function processRunTask(job: JobRow) {
     .single();
   if (msgErr) throw new Error(`Failed to insert task message: ${msgErr.message}`);
 
-  const reply = await buildAssistantReply({
-    jobId: job.id,
-    sessionId,
-    inboundId: msg.id,
-    inboundContent: content,
-    telegramChatId: chatId,
-    tools: createAllTools(sessionId),
-  });
-
   const { data: saved, error: saveErr } = await supabase
     .from("messages")
     .insert({
@@ -503,7 +541,7 @@ async function processRunTask(job: JobRow) {
       reply_to_message_id: msg.id,
       role: "assistant",
       type: "text",
-      content: reply,
+      content: "",
       provider: "telegram",
       telegram_chat_id: chatId,
       telegram_sent_at: null,
@@ -512,7 +550,27 @@ async function processRunTask(job: JobRow) {
     .single();
   if (saveErr) throw new Error(`Failed to persist reply: ${saveErr.message}`);
 
-  await telegramSendMessage({ chatId, text: reply });
+  const reply = await buildAssistantReply({
+    jobId: job.id,
+    sessionId,
+    inboundId: msg.id,
+    inboundContent: content,
+    telegramChatId: chatId,
+    tools: createAllTools(sessionId),
+    streamMode: MESSAGE_STREAM_MODE,
+  });
+
+  const { error: contentErr } = await supabase
+    .from("messages")
+    .update({ content: reply })
+    .eq("id", saved.id);
+  if (contentErr) {
+    logger.warn("job.run_task.update_content_failed", {
+      jobId: job.id,
+      replyId: saved.id,
+      error: contentErr,
+    });
+  }
 
   const { error: deliveredErr } = await supabase
     .from("messages")

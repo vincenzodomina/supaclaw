@@ -58,6 +58,7 @@ export async function generateAgentReply({
   maxSteps = getConfigNumber("agent.max_steps") ?? 5,
   tools,
   onToolEvent,
+  onTextDelta,
 }: {
   messages: ChatMessage[];
   provider?: LLMProvider;
@@ -65,6 +66,7 @@ export async function generateAgentReply({
   maxSteps?: number;
   tools?: ToolSet;
   onToolEvent?: (event: ToolStreamEvent) => void | Promise<void>;
+  onTextDelta?: (delta: string, fullText: string) => void | Promise<void>;
 }): Promise<string> {
   const providerModel = resolveProviderModel(provider, model);
 
@@ -81,6 +83,7 @@ export async function generateAgentReply({
     switch (part.type) {
       case "text-delta":
         text += part.text;
+        await onTextDelta?.(part.text, text);
         break;
       case "tool-call":
         await onToolEvent?.({

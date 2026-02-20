@@ -22,8 +22,18 @@ function getBackoffMs(attempt: number): number {
   return exponential + jitter
 }
 
-// deno-lint-ignore no-explicit-any
-type ApiResult = Record<string, any> | null
+type ApiResult = Record<string, unknown> | null
+
+export type TelegramStreamMode = 'off' | 'partial' | 'block'
+
+export const TELEGRAM_STREAM_PARAMS = {
+  mode: 'partial' as TelegramStreamMode,
+  throttleMs: 900,
+  minInitialChars: 24,
+  textLimit: 4096,
+  chunkSoftLimit: 3900,
+  blockMinChars: 160,
+}
 
 async function telegramApi(method: string, body: Record<string, unknown>): Promise<ApiResult> {
   const token = mustGetEnv('TELEGRAM_BOT_TOKEN')
@@ -67,6 +77,41 @@ async function telegramApi(method: string, body: Record<string, unknown>): Promi
   throw new Error(`Telegram ${method}: exhausted ${MAX_RETRIES} retries`)
 }
 
+function normalizeTelegramText(text: string): string {
+  const normalized = text.trim()
+  return normalized || '...'
+}
+
+function findBreakIndex(text: string, maxChars: number, minChars = 1): number {
+  if (text.length <= maxChars) return text.length
+  const cap = Math.max(minChars, maxChars)
+  const probes = ['\n\n', '\n', '. ', '! ', '? ', ' ']
+  for (const probe of probes) {
+    const idx = text.lastIndexOf(probe, cap)
+    if (idx >= minChars) return idx + (probe === ' ' ? 0 : probe.length)
+  }
+  return cap
+}
+
+export function chunkTelegramText(text: string, chunkSoftLimit = TELEGRAM_STREAM_PARAMS.chunkSoftLimit): string[] {
+  const normalized = text.trim()
+  if (!normalized) return []
+  const chunks: string[] = []
+  let cursor = 0
+  while (cursor < normalized.length) {
+    const remaining = normalized.slice(cursor)
+    if (remaining.length <= chunkSoftLimit) {
+      chunks.push(remaining)
+      break
+    }
+    const cut = findBreakIndex(remaining, chunkSoftLimit, Math.floor(chunkSoftLimit * 0.5))
+    const chunk = remaining.slice(0, cut).trim()
+    if (chunk) chunks.push(chunk)
+    cursor += Math.max(cut, 1)
+  }
+  return chunks
+}
+
 /** Send a message and return the Telegram message_id (for later edits). */
 export async function telegramSendMessage(params: { chatId: string; text: string }): Promise<string | undefined> {
   const chatId = params.chatId?.toString().trim()
@@ -75,7 +120,8 @@ export async function telegramSendMessage(params: { chatId: string; text: string
   if (!text) throw new Error('telegramSendMessage requires non-empty text')
 
   const data = await telegramApi('sendMessage', { chat_id: chatId, text })
-  return data?.result?.message_id?.toString()
+  const result = data?.result as { message_id?: number | string } | undefined
+  return result?.message_id?.toString()
 }
 
 /** Edit an existing message in-place (used for tool-call status updates). */
@@ -86,5 +132,164 @@ export async function telegramEditMessageText(params: { chatId: string; messageI
   if (!chatId || !messageId || !text) throw new Error('telegramEditMessageText requires non-empty chatId, messageId, and text')
 
   await telegramApi('editMessageText', { chat_id: chatId, message_id: Number(messageId), text })
+}
+
+export async function telegramDeleteMessage(params: { chatId: string; messageId: string }): Promise<void> {
+  const chatId = params.chatId?.toString().trim()
+  const messageId = params.messageId?.toString().trim()
+  if (!chatId || !messageId) throw new Error('telegramDeleteMessage requires non-empty chatId and messageId')
+  await telegramApi('deleteMessage', { chat_id: chatId, message_id: Number(messageId) })
+}
+
+export async function telegramSendChatAction(params: { chatId: string; action?: 'typing' }): Promise<void> {
+  const chatId = params.chatId?.toString().trim()
+  if (!chatId) throw new Error('telegramSendChatAction requires non-empty chatId')
+  await telegramApi('sendChatAction', { chat_id: chatId, action: params.action ?? 'typing' })
+}
+
+export async function telegramSendChunkedMessage(params: {
+  chatId: string
+  text: string
+  chunkSoftLimit?: number
+}): Promise<string[]> {
+  const chatId = params.chatId?.toString().trim()
+  if (!chatId) throw new Error('telegramSendChunkedMessage requires non-empty chatId')
+  const chunks = chunkTelegramText(params.text, params.chunkSoftLimit)
+  const messageIds: string[] = []
+  for (const chunk of chunks) {
+    const id = await telegramSendMessage({ chatId, text: chunk })
+    if (id) messageIds.push(id)
+  }
+  return messageIds
+}
+
+type DraftStreamParams = {
+  chatId: string
+  mode?: TelegramStreamMode
+  throttleMs?: number
+  minInitialChars?: number
+  textLimit?: number
+  chunkSoftLimit?: number
+  blockMinChars?: number
+}
+
+export function createTelegramDraftStream(params: DraftStreamParams) {
+  const chatId = params.chatId
+  const mode = params.mode ?? TELEGRAM_STREAM_PARAMS.mode
+  const throttleMs = params.throttleMs ?? TELEGRAM_STREAM_PARAMS.throttleMs
+  const minInitialChars = params.minInitialChars ?? TELEGRAM_STREAM_PARAMS.minInitialChars
+  const textLimit = params.textLimit ?? TELEGRAM_STREAM_PARAMS.textLimit
+  const chunkSoftLimit = params.chunkSoftLimit ?? TELEGRAM_STREAM_PARAMS.chunkSoftLimit
+  const blockMinChars = params.blockMinChars ?? TELEGRAM_STREAM_PARAMS.blockMinChars
+
+  let draftMessageId: string | undefined
+  let pendingText = ''
+  let lastSentText = ''
+  let lastFlushAt = 0
+  let overflowed = false
+  let blockSentChars = 0
+
+  async function flushPartial(force = false) {
+    if (overflowed) return
+    const now = Date.now()
+    if (!force && now - lastFlushAt < throttleMs) return
+    const candidate = normalizeTelegramText(pendingText)
+    if (candidate.length > textLimit) {
+      overflowed = true
+      return
+    }
+    if (!draftMessageId && candidate.length < minInitialChars) return
+    if (candidate === lastSentText) return
+    if (!draftMessageId) {
+      draftMessageId = await telegramSendMessage({ chatId, text: candidate })
+    } else {
+      await telegramEditMessageText({ chatId, messageId: draftMessageId, text: candidate })
+    }
+    lastSentText = candidate
+    lastFlushAt = now
+  }
+
+  async function flushBlock(force = false) {
+    const now = Date.now()
+    if (!force && now - lastFlushAt < throttleMs) return
+    const full = pendingText
+    if (full.length <= blockSentChars) return
+    let remaining = full.slice(blockSentChars)
+    let consumed = 0
+    const chunks: string[] = []
+
+    if (force) {
+      chunks.push(...chunkTelegramText(remaining, chunkSoftLimit))
+      consumed = remaining.length
+    } else {
+      while (remaining.length >= blockMinChars) {
+        if (remaining.length <= chunkSoftLimit) break
+        const cut = findBreakIndex(remaining, chunkSoftLimit, Math.min(blockMinChars, chunkSoftLimit))
+        const piece = remaining.slice(0, cut)
+        if (piece.trim()) chunks.push(piece.trim())
+        consumed += Math.max(cut, 1)
+        remaining = remaining.slice(Math.max(cut, 1))
+      }
+    }
+
+    for (const chunk of chunks) {
+      await telegramSendMessage({ chatId, text: chunk })
+    }
+    blockSentChars += consumed
+    if (chunks.length > 0) lastFlushAt = now
+  }
+
+  async function update(fullText: string) {
+    if (mode === 'off') return
+    pendingText = fullText
+    if (mode === 'partial') {
+      await flushPartial(false)
+      return
+    }
+    await flushBlock(false)
+  }
+
+  async function finalize(finalText: string) {
+    const finalClean = normalizeTelegramText(finalText)
+    pendingText = finalClean
+    if (mode === 'off') {
+      await telegramSendChunkedMessage({ chatId, text: finalClean, chunkSoftLimit })
+      return
+    }
+    if (mode === 'block') {
+      await flushBlock(true)
+      return
+    }
+
+    await flushPartial(true)
+    if (overflowed || finalClean.length > textLimit) {
+      if (draftMessageId) {
+        await telegramDeleteMessage({ chatId, messageId: draftMessageId }).catch(() => {})
+        draftMessageId = undefined
+      }
+      await telegramSendChunkedMessage({ chatId, text: finalClean, chunkSoftLimit })
+      return
+    }
+    if (!draftMessageId) {
+      draftMessageId = await telegramSendMessage({ chatId, text: finalClean })
+      return
+    }
+    if (lastSentText !== finalClean) {
+      await telegramEditMessageText({ chatId, messageId: draftMessageId, text: finalClean })
+      lastSentText = finalClean
+    }
+  }
+
+  async function clearDraft() {
+    if (!draftMessageId) return
+    await telegramDeleteMessage({ chatId, messageId: draftMessageId }).catch(() => {})
+    draftMessageId = undefined
+  }
+
+  return {
+    update,
+    finalize,
+    clearDraft,
+  }
 }
 

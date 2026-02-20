@@ -35,6 +35,31 @@ function getTextContent(message: TelegramMessage): string | undefined {
   return undefined
 }
 
+async function kickAgentWorkerNow() {
+  const workerSecret = Deno.env.get('WORKER_SECRET')?.trim()
+  if (!workerSecret) return
+  const baseUrl = (Deno.env.get('SUPABASE_URL') ?? '').trim().replace(/\/+$/, '')
+  if (!baseUrl) return
+  const url = `${baseUrl}/functions/v1/agent-worker`
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 1500)
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-worker-secret': workerSecret,
+      },
+      body: '{}',
+      signal: ctrl.signal,
+    })
+  } catch {
+    // Best effort: cron remains the durable backstop.
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 const supabase = createServiceClient()
 
 Deno.serve(async (req) => {
@@ -106,6 +131,8 @@ Deno.serve(async (req) => {
     p_max_attempts: 10,
   })
   if (jErr) return jsonResponse({ error: jErr.message }, { status: 500 })
+
+  await kickAgentWorkerNow()
 
   return textResponse('ok')
 })

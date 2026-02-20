@@ -38,7 +38,7 @@ Imagine an AI agent that you can setup with one command in the cloud in under 10
 - **Code I can read and understand** — simple enough to hack, re-use existing battle tested software
 - **Soul/Identity system** — customizable personality and behavior
 - **Works with messaging apps I already use** — Telegram, Slack, WhatsApp, etc.
-- **Always-on** — available 24/7 without babysitting a daemon
+- **Always-on** — available 24/7 without babysitting a daemon, but as stateless server
 - **Session persistence** — conversations survive across devices + parallel use possible
 - **File storage** — agent can read/write my files in the cloud and download to a filesystem when needed
 - **Scheduled tasks** — heartbeat, reminders, cron/background jobs - for scheduled health checks / proactive tasks
