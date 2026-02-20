@@ -35,11 +35,6 @@ export const TELEGRAM_STREAM_PARAMS = {
   blockMinChars: 160,
 }
 
-export const TELEGRAM_TYPING_PARAMS = {
-  refreshMs: 4000,
-  timeoutMs: 10 * 60_000,
-}
-
 async function telegramApi(method: string, body: Record<string, unknown>): Promise<ApiResult> {
   const token = mustGetEnv('TELEGRAM_BOT_TOKEN')
   const url = `https://api.telegram.org/bot${token}/${method}`
@@ -157,52 +152,6 @@ export async function telegramSendChatAction(params: { chatId: string; action?: 
   const chatId = params.chatId?.toString().trim()
   if (!chatId) throw new Error('telegramSendChatAction requires non-empty chatId')
   await telegramApi('sendChatAction', { chat_id: chatId, action: params.action ?? 'typing' })
-}
-
-export function createTelegramTypingLoop(params: {
-  chatId: string
-  refreshMs?: number
-  timeoutMs?: number
-}) {
-  const chatId = params.chatId?.toString().trim()
-  if (!chatId) throw new Error('createTelegramTypingLoop requires non-empty chatId')
-  const refreshMs = params.refreshMs ?? TELEGRAM_TYPING_PARAMS.refreshMs
-  const timeoutMs = params.timeoutMs ?? TELEGRAM_TYPING_PARAMS.timeoutMs
-  let intervalId: number | undefined
-  let timeoutId: number | undefined
-  let stopped = false
-
-  const ping = () => telegramSendChatAction({ chatId, action: 'typing' }).catch(() => {})
-
-  const stop = () => {
-    if (stopped) return
-    stopped = true
-    if (intervalId !== undefined) {
-      clearInterval(intervalId)
-      intervalId = undefined
-    }
-    if (timeoutId !== undefined) {
-      clearTimeout(timeoutId)
-      timeoutId = undefined
-    }
-  }
-
-  const start = async () => {
-    if (stopped) return
-    await ping()
-    intervalId = setInterval(() => {
-      if (stopped) return
-      void ping()
-    }, refreshMs)
-    timeoutId = setTimeout(() => {
-      stop()
-    }, timeoutMs)
-  }
-
-  return {
-    start,
-    stop,
-  }
 }
 
 export async function telegramSendChunkedMessage(params: {
