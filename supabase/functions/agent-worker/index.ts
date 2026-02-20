@@ -3,6 +3,7 @@ import {
   getConfigBoolean,
   jsonResponse,
   mustGetEnv,
+  summarize,
   textResponse,
   timingSafeEqual,
 } from "../_shared/helpers.ts";
@@ -275,7 +276,7 @@ async function runAgentHandler(params: {
         try {
           tgMsgId = await telegramSendMessage({
             chatId: params.telegramChatId,
-            text: `${event.toolName} — started`,
+            text: `⚙️ ${event.toolName} ${summarize(event.args)}`,
           });
           if (tgMsgId) {
             await supabase.from("messages")
@@ -310,7 +311,7 @@ async function runAgentHandler(params: {
         await telegramEditMessageText({
           chatId: params.telegramChatId,
           messageId: state.tgMsgId,
-          text: `${event.toolName} — succeeded`,
+          text: `✅ ${event.toolName} ${summarize(event.result)}`,
         }).catch((e: unknown) =>
           logger.warn("tool-call.telegram_edit_failed", { error: e })
         );
@@ -365,7 +366,7 @@ async function runAgentHandler(params: {
         telegramEditMessageText({
           chatId: params.telegramChatId,
           messageId: s.tgMsgId,
-          text: `${s.toolName} — failed`,
+          text: `❌ ${s.toolName} ${summarize(errMsg)}`,
         }).catch(() => {});
       }
     }
