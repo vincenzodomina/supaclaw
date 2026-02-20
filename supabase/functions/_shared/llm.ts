@@ -83,7 +83,13 @@ export async function generateAgentReply({
     switch (part.type) {
       case "text-delta":
         text += part.text;
-        await onTextDelta?.(part.text, text);
+        if (onTextDelta) {
+          try {
+            await onTextDelta(part.text, text);
+          } catch (error) {
+            logger.warn("llm.on_text_delta_failed", { error });
+          }
+        }
         break;
       case "tool-call":
         await onToolEvent?.({

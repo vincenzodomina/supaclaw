@@ -98,8 +98,8 @@ The worker only calls the LLM when there are due jobs, so this acts as a minimal
     - `<folder>/**/<file>`: user workspace project folders and files the agent can read/write
 
 - **Edge Functions (Deno)**
-  - `telegram-webhook`: verifies request, normalizes message, writes `messages`, enqueues a `job`, kicks `agent-worker` immediately (best-effort)
-  - `agent-worker`: claims jobs (SKIP LOCKED), builds context, calls LLM, persists outputs, sends outbound message
+  - `telegram-webhook`: verifies request, normalizes message, writes `messages`, enqueues a `job`, sends an immediate typing indicator, kicks `agent-worker` immediately (best-effort)
+  - `agent-worker`: claims jobs (SKIP LOCKED), builds context, starts a typing keepalive loop, calls LLM, streams partial replies to Telegram (draft message edits), persists outputs, sends outbound message, stops typing loop
   - `trigger-webhook`: authenticated endpoint for external apps to enqueue jobs
 
 - **Cron**
@@ -112,9 +112,9 @@ The worker only calls the LLM when there are due jobs, so this acts as a minimal
 #### Core flows
 - **Inbound message**
   1. Telegram sends update to `telegram-webhook`
-  2. `telegram-webhook` validates secret, upserts session, inserts inbound message, enqueues `job(type="process_message")`
+  2. `telegram-webhook` validates secret, upserts session, inserts inbound message, enqueues `job(type="process_message")`, sends typing indicator immediately
   3. Webhook kicks `agent-worker` immediately (best-effort, failure swallowed) and returns `200 OK`
-  4. `agent-worker` claims the job, composes prompt (SOUL + recent messages + retrieved memory), calls LLM, runs tools, streams/sends reply via Telegram API
+  4. `agent-worker` claims the job, starts a typing keepalive loop (refreshes every ~4s, auto-stops after ~2min), composes prompt (SOUL + recent messages + retrieved memory), calls LLM, streams partial replies via Telegram draft edits (partial or block mode), runs tools, finalizes reply, stops typing loop
   5. If the immediate kick failed, cron picks up the job on the next tick (within ~60s)
 
 - **Scheduled task / reminder**
@@ -142,6 +142,7 @@ The worker only calls the LLM when there are due jobs, so this acts as a minimal
    - upserts `sessions`
    - inserts `messages(role='user')`
    - enqueues `jobs(type='process_message')`
+   - sends typing indicator (`sendChatAction`)
    - kicks `agent-worker` immediately (best-effort)
    - returns 200 OK
    │
@@ -150,10 +151,11 @@ The worker only calls the LLM when there are due jobs, so this acts as a minimal
    - claims jobs (SKIP LOCKED)
    - retrieves `.agents/AGENTS.md` (and other persona files) from Storage
    - retrieves memories via hybrid search
+   - starts typing keepalive loop (~4s refresh, ~2min timeout)
    - calls LLM provider (OpenAI or Anthropic)
    - streams partial replies to Telegram (draft message edits)
    - inserts `messages(role='assistant')` linked to the user messages
-   - sends final reply via Provider API
+   - finalizes reply via Provider API, stops typing loop
 ```
 
 

@@ -1,12 +1,13 @@
 import { createServiceClient } from "../_shared/supabase.ts";
 import { mustGetEnv, timingSafeEqual, getConfigBoolean, jsonResponse, textResponse } from "../_shared/helpers.ts";
 import {
+  createTelegramTypingLoop,
   createTelegramDraftStream,
   TELEGRAM_STREAM_PARAMS,
+  TELEGRAM_TYPING_PARAMS,
   telegramEditMessageText,
   telegramSendChunkedMessage,
   telegramSendMessage,
-  telegramSendChatAction,
   type TelegramStreamMode,
 } from "../_shared/telegram.ts";
 import { logger } from "../_shared/logger.ts";
@@ -42,6 +43,7 @@ const supabase = createServiceClient();
 const FALLBACK_REPLY =
   "I hit a temporary issue generating a response. Please try again in a moment.";
 const MESSAGE_STREAM_MODE: TelegramStreamMode = TELEGRAM_STREAM_PARAMS.mode;
+const STREAM_ENABLED = MESSAGE_STREAM_MODE !== "off";
 
 function isAuthorized(req: Request) {
   const expected = mustGetEnv("WORKER_SECRET");
@@ -217,11 +219,13 @@ async function processProcessMessage(job: JobRow) {
     .update({ content: reply })
     .eq("id", savedReply.id);
   if (contentErr) {
-    // Warn-only: reply is already delivered; retrying would likely duplicate delivery.
-    logger.warn("job.process_message.update_content_failed", {
-      jobId: job.id,
-      replyId: savedReply.id,
-      error: contentErr,
+    throw new Error(`Failed to persist assistant content: ${contentErr.message}`);
+  }
+
+  if (!STREAM_ENABLED) {
+    await telegramSendChunkedMessage({
+      chatId: telegramChatId,
+      text: reply,
     });
   }
 
@@ -340,9 +344,12 @@ async function buildAssistantReply(params: {
     throw new Error(`Failed to load recent messages: ${recentErr.message}`);
   }
 
+  const conversation = (recent ?? []).filter((m: RecentMessage) =>
+    m.role !== "assistant" || m.content.trim().length > 0
+  );
   const messages: ChatMessage[] = [
     { role: "system", content: system },
-    ...(recent ?? []).reverse().map((m: RecentMessage) => ({
+    ...conversation.reverse().map((m: RecentMessage) => ({
       role: m.role,
       content: m.content,
     })),
@@ -413,7 +420,7 @@ async function buildAssistantReply(params: {
   };
 
   let rawReply: string;
-  const draft = params.streamMode
+  const draft = params.streamMode && params.streamMode !== "off"
     ? createTelegramDraftStream({
       chatId: params.telegramChatId,
       mode: params.streamMode,
@@ -424,52 +431,62 @@ async function buildAssistantReply(params: {
       blockMinChars: TELEGRAM_STREAM_PARAMS.blockMinChars,
     })
     : null;
-  if (draft) {
-    telegramSendChatAction({ chatId: params.telegramChatId, action: "typing" }).catch(() => {});
-  }
+  const typingLoop = draft
+    ? createTelegramTypingLoop({
+      chatId: params.telegramChatId,
+      refreshMs: TELEGRAM_TYPING_PARAMS.refreshMs,
+      timeoutMs: TELEGRAM_TYPING_PARAMS.timeoutMs,
+    })
+    : null;
+  if (typingLoop) await typingLoop.start();
   try {
-    rawReply = await generateAgentReply({
-      messages,
-      onToolEvent,
-      tools: params.tools,
-      onTextDelta: async (_delta, fullText) => {
-        if (!draft) return;
-        await draft.update(fullText);
-      },
-    });
-  } catch (err) {
-    if (draft) await draft.clearDraft();
-    // Mark any pending tool calls as failed
-    const errMsg = err instanceof Error ? err.message : String(err);
-    for (const [, s] of toolState) {
-      await supabase.from("messages")
-        .update({ tool_status: "failed", tool_error: errMsg, tool_duration_ms: Date.now() - s.startedAt })
-        .eq("id", s.rowId).eq("tool_status", "started");
-      if (showToolCalls && s.tgMsgId) {
-        telegramEditMessageText({
-          chatId: params.telegramChatId, messageId: s.tgMsgId, text: `${s.toolName} — failed`,
-        }).catch(() => {});
+    try {
+      rawReply = await generateAgentReply({
+        messages,
+        onToolEvent,
+        tools: params.tools,
+        onTextDelta: async (_delta, fullText) => {
+          if (!draft) return;
+          await draft.update(fullText);
+        },
+      });
+    } catch (err) {
+      if (draft) await draft.clearDraft();
+      // Mark any pending tool calls as failed
+      const errMsg = err instanceof Error ? err.message : String(err);
+      for (const [, s] of toolState) {
+        await supabase.from("messages")
+          .update({ tool_status: "failed", tool_error: errMsg, tool_duration_ms: Date.now() - s.startedAt })
+          .eq("id", s.rowId).eq("tool_status", "started");
+        if (showToolCalls && s.tgMsgId) {
+          telegramEditMessageText({
+            chatId: params.telegramChatId, messageId: s.tgMsgId, text: `${s.toolName} — failed`,
+          }).catch(() => {});
+        }
       }
+      throw err;
     }
-    throw err;
-  }
 
-  const reply = rawReply.trim();
-  if (!reply) {
-    logger.warn("job.process_message.reply_empty", {
+    const reply = rawReply.trim();
+    if (!reply) {
+      logger.warn("job.process_message.reply_empty", {
+        jobId: params.jobId,
+        inboundId: params.inboundId,
+        recentCount: recent?.length ?? 0,
+      });
+      if (draft) await draft.finalize(FALLBACK_REPLY);
+      return FALLBACK_REPLY;
+    }
+
+    if (draft) await draft.finalize(reply);
+    logger.debug("job.process_message.reply_generated", {
       jobId: params.jobId,
-      inboundId: params.inboundId,
-      recentCount: recent?.length ?? 0,
+      replyLength: reply.length,
     });
-    if (draft) await draft.finalize(FALLBACK_REPLY);
-    return FALLBACK_REPLY;
+    return reply;
+  } finally {
+    typingLoop?.stop();
   }
-  if (draft) await draft.finalize(reply);
-  logger.debug("job.process_message.reply_generated", {
-    jobId: params.jobId,
-    replyLength: reply.length,
-  });
-  return reply;
 }
 
 async function updateTaskAfterRun(taskId: number) {
@@ -565,11 +582,11 @@ async function processRunTask(job: JobRow) {
     .update({ content: reply })
     .eq("id", saved.id);
   if (contentErr) {
-    logger.warn("job.run_task.update_content_failed", {
-      jobId: job.id,
-      replyId: saved.id,
-      error: contentErr,
-    });
+    throw new Error(`Failed to persist task assistant content: ${contentErr.message}`);
+  }
+
+  if (!STREAM_ENABLED) {
+    await telegramSendChunkedMessage({ chatId, text: reply });
   }
 
   const { error: deliveredErr } = await supabase

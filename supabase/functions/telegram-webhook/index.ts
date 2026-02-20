@@ -1,5 +1,6 @@
 import { createServiceClient } from '../_shared/supabase.ts'
 import { mustGetEnv, timingSafeEqual, jsonResponse, textResponse } from '../_shared/helpers.ts'
+import { telegramSendChatAction } from '../_shared/telegram.ts'
 
 type TelegramUpdate = {
   update_id: number | string
@@ -132,6 +133,7 @@ Deno.serve(async (req) => {
   })
   if (jErr) return jsonResponse({ error: jErr.message }, { status: 500 })
 
+  await telegramSendChatAction({ chatId, action: 'typing' }).catch(() => {})
   await kickAgentWorkerNow()
 
   return textResponse('ok')

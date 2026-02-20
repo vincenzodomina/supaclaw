@@ -35,6 +35,11 @@ export const TELEGRAM_STREAM_PARAMS = {
   blockMinChars: 160,
 }
 
+export const TELEGRAM_TYPING_PARAMS = {
+  refreshMs: 4000,
+  timeoutMs: 10 * 60_000,
+}
+
 async function telegramApi(method: string, body: Record<string, unknown>): Promise<ApiResult> {
   const token = mustGetEnv('TELEGRAM_BOT_TOKEN')
   const url = `https://api.telegram.org/bot${token}/${method}`
@@ -84,17 +89,18 @@ function normalizeTelegramText(text: string): string {
 
 function findBreakIndex(text: string, maxChars: number, minChars = 1): number {
   if (text.length <= maxChars) return text.length
-  const cap = Math.max(minChars, maxChars)
+  const cap = Math.max(1, Math.min(maxChars, text.length))
+  const floor = Math.max(1, Math.min(minChars, cap))
   const probes = ['\n\n', '\n', '. ', '! ', '? ', ' ']
   for (const probe of probes) {
     const idx = text.lastIndexOf(probe, cap)
-    if (idx >= minChars) return idx + (probe === ' ' ? 0 : probe.length)
+    if (idx >= floor) return idx + (probe === ' ' ? 0 : probe.length)
   }
   return cap
 }
 
 export function chunkTelegramText(text: string, chunkSoftLimit = TELEGRAM_STREAM_PARAMS.chunkSoftLimit): string[] {
-  const normalized = text.trim()
+  const normalized = text
   if (!normalized) return []
   const chunks: string[] = []
   let cursor = 0
@@ -105,8 +111,8 @@ export function chunkTelegramText(text: string, chunkSoftLimit = TELEGRAM_STREAM
       break
     }
     const cut = findBreakIndex(remaining, chunkSoftLimit, Math.floor(chunkSoftLimit * 0.5))
-    const chunk = remaining.slice(0, cut).trim()
-    if (chunk) chunks.push(chunk)
+    const chunk = remaining.slice(0, cut)
+    if (chunk.trim()) chunks.push(chunk)
     cursor += Math.max(cut, 1)
   }
   return chunks
@@ -131,7 +137,13 @@ export async function telegramEditMessageText(params: { chatId: string; messageI
   const text = params.text?.toString().trim()
   if (!chatId || !messageId || !text) throw new Error('telegramEditMessageText requires non-empty chatId, messageId, and text')
 
-  await telegramApi('editMessageText', { chat_id: chatId, message_id: Number(messageId), text })
+  try {
+    await telegramApi('editMessageText', { chat_id: chatId, message_id: Number(messageId), text })
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    if (msg.includes('message is not modified')) return
+    throw error
+  }
 }
 
 export async function telegramDeleteMessage(params: { chatId: string; messageId: string }): Promise<void> {
@@ -145,6 +157,52 @@ export async function telegramSendChatAction(params: { chatId: string; action?: 
   const chatId = params.chatId?.toString().trim()
   if (!chatId) throw new Error('telegramSendChatAction requires non-empty chatId')
   await telegramApi('sendChatAction', { chat_id: chatId, action: params.action ?? 'typing' })
+}
+
+export function createTelegramTypingLoop(params: {
+  chatId: string
+  refreshMs?: number
+  timeoutMs?: number
+}) {
+  const chatId = params.chatId?.toString().trim()
+  if (!chatId) throw new Error('createTelegramTypingLoop requires non-empty chatId')
+  const refreshMs = params.refreshMs ?? TELEGRAM_TYPING_PARAMS.refreshMs
+  const timeoutMs = params.timeoutMs ?? TELEGRAM_TYPING_PARAMS.timeoutMs
+  let intervalId: number | undefined
+  let timeoutId: number | undefined
+  let stopped = false
+
+  const ping = () => telegramSendChatAction({ chatId, action: 'typing' }).catch(() => {})
+
+  const stop = () => {
+    if (stopped) return
+    stopped = true
+    if (intervalId !== undefined) {
+      clearInterval(intervalId)
+      intervalId = undefined
+    }
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId)
+      timeoutId = undefined
+    }
+  }
+
+  const start = async () => {
+    if (stopped) return
+    await ping()
+    intervalId = setInterval(() => {
+      if (stopped) return
+      void ping()
+    }, refreshMs)
+    timeoutId = setTimeout(() => {
+      stop()
+    }, timeoutMs)
+  }
+
+  return {
+    start,
+    stop,
+  }
 }
 
 export async function telegramSendChunkedMessage(params: {
@@ -214,7 +272,7 @@ export function createTelegramDraftStream(params: DraftStreamParams) {
     if (!force && now - lastFlushAt < throttleMs) return
     const full = pendingText
     if (full.length <= blockSentChars) return
-    let remaining = full.slice(blockSentChars)
+    const remaining = full.slice(blockSentChars)
     let consumed = 0
     const chunks: string[] = []
 
@@ -222,13 +280,13 @@ export function createTelegramDraftStream(params: DraftStreamParams) {
       chunks.push(...chunkTelegramText(remaining, chunkSoftLimit))
       consumed = remaining.length
     } else {
-      while (remaining.length >= blockMinChars) {
-        if (remaining.length <= chunkSoftLimit) break
-        const cut = findBreakIndex(remaining, chunkSoftLimit, Math.min(blockMinChars, chunkSoftLimit))
-        const piece = remaining.slice(0, cut)
-        if (piece.trim()) chunks.push(piece.trim())
-        consumed += Math.max(cut, 1)
-        remaining = remaining.slice(Math.max(cut, 1))
+      if (remaining.length < blockMinChars) return
+      const cap = Math.min(chunkSoftLimit, remaining.length)
+      const cut = findBreakIndex(remaining, cap, Math.min(blockMinChars, cap))
+      const piece = remaining.slice(0, cut)
+      if (piece.trim()) {
+        chunks.push(piece)
+        consumed = Math.max(cut, 1)
       }
     }
 
