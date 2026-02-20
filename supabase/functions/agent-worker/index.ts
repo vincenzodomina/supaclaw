@@ -424,8 +424,12 @@ async function buildAssistantReply(params: {
       blockMinChars: TELEGRAM_STREAM_PARAMS.blockMinChars,
     })
     : null;
+  let typingInterval: ReturnType<typeof setInterval> | undefined;
   if (draft) {
-    telegramSendChatAction({ chatId: params.telegramChatId, action: "typing" }).catch(() => {});
+    const sendTyping = () =>
+      telegramSendChatAction({ chatId: params.telegramChatId, action: "typing" }).catch(() => {});
+    sendTyping();
+    typingInterval = setInterval(sendTyping, 4_000);
   }
   try {
     rawReply = await generateAgentReply({
@@ -452,6 +456,8 @@ async function buildAssistantReply(params: {
       }
     }
     throw err;
+  } finally {
+    clearInterval(typingInterval);
   }
 
   const reply = rawReply.trim();
