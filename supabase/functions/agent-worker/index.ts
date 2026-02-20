@@ -133,7 +133,7 @@ async function processProcessMessage(job: JobRow) {
         replyId: existingReply.id,
         inboundId: inbound.id,
       });
-      textToDeliver = await buildAssistantReply({
+      textToDeliver = await runAgent({
         jobId: job.id,
         sessionId,
         inboundId: inbound.id,
@@ -195,7 +195,7 @@ async function processProcessMessage(job: JobRow) {
     throw new Error(`Failed to persist assistant message: ${saveErr.message}`);
   }
 
-  const reply = await buildAssistantReply({
+  const reply = await runAgent({
     jobId: job.id,
     sessionId,
     inboundId: inbound.id,
@@ -236,7 +236,7 @@ async function processProcessMessage(job: JobRow) {
   });
 }
 
-async function buildAssistantReply(params: {
+async function runAgent(params: {
   jobId: number;
   sessionId: string;
   inboundId: number;
@@ -483,7 +483,7 @@ async function processRunTask(job: JobRow) {
     .single();
   if (saveErr) throw new Error(`Failed to persist reply: ${saveErr.message}`);
 
-  const reply = await buildAssistantReply({
+  const reply = await runAgent({
     jobId: job.id,
     sessionId,
     inboundId: msg.id,
