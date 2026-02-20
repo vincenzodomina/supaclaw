@@ -4,13 +4,11 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 //import { createServiceClient } from "./supabase.ts";
 import { buildInputMessages } from "./context.ts";
-import { tools as defaultTools } from "./tools/index.ts";
+import { createAllTools } from "./tools/index.ts";
 import { getConfigNumber } from "./helpers.ts";
 import { logger } from "./logger.ts";
 
 export type LLMProvider = "openai" | "anthropic" | "google";
-
-export type ToolSet = Parameters<typeof streamText>[0]["tools"];
 
 export type ToolStreamEvent =
   | {
@@ -62,7 +60,6 @@ export async function runAgent({
   provider = "openai",
   model,
   maxSteps = getConfigNumber("agent.max_steps") ?? 5,
-  tools,
   onToolEvent,
   onTextDelta,
 }: {
@@ -70,7 +67,6 @@ export async function runAgent({
   provider?: LLMProvider;
   model?: string;
   maxSteps?: number;
-  tools?: ToolSet;
   onToolEvent?: (event: ToolStreamEvent) => void | Promise<void>;
   onTextDelta?: (delta: string, fullText: string) => void | Promise<void>;
 }): Promise<string> {
@@ -86,7 +82,7 @@ export async function runAgent({
     const result = streamText({
       model: providerModel,
       messages,
-      tools: tools ?? defaultTools,
+      tools: createAllTools(sessionId),
       ...(provider !== "openai" ? { maxOutputTokens: 800 } : {}),
       stopWhen: stepCountIs(maxSteps),
     });

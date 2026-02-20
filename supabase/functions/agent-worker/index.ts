@@ -18,11 +18,10 @@ import {
 import { logger } from "../_shared/logger.ts";
 import {
   runAgent,
-  type ToolSet,
   type ToolStreamEvent,
 } from "../_shared/agent.ts";
 import { embedText } from "../_shared/embeddings.ts";
-import { computeNextRun, createAllTools } from "../_shared/tools/index.ts";
+import { computeNextRun } from "../_shared/tools/cron.ts";
 
 type JobRow = {
   id: number;
@@ -138,7 +137,6 @@ async function processProcessMessage(job: JobRow) {
         inboundId: inbound.id,
         inboundContent: inbound.content,
         telegramChatId,
-        tools: createAllTools(sessionId),
       });
       const { error: repairErr } = await supabase
         .from("messages")
@@ -200,7 +198,6 @@ async function processProcessMessage(job: JobRow) {
     inboundId: inbound.id,
     inboundContent: inbound.content,
     telegramChatId,
-    tools: createAllTools(sessionId),
     streamMode: MESSAGE_STREAM_MODE,
   });
 
@@ -241,7 +238,6 @@ async function runAgentHandler(params: {
   inboundId: number;
   inboundContent: string;
   telegramChatId: string;
-  tools?: ToolSet;
   streamMode?: TelegramStreamMode;
 }) {
   // Tool-call stream handler: persist each tool call as a timeline row + optional Telegram rendering
@@ -348,7 +344,6 @@ async function runAgentHandler(params: {
     rawReply = await runAgent({
       sessionId: params.sessionId,
       onToolEvent,
-      tools: params.tools,
       onTextDelta: async (_delta, fullText) => {
         if (!draft) return;
         await draft.update(fullText);
@@ -484,7 +479,6 @@ async function processRunTask(job: JobRow) {
     inboundId: msg.id,
     inboundContent: content,
     telegramChatId: chatId,
-    tools: createAllTools(sessionId),
     streamMode: MESSAGE_STREAM_MODE,
   });
 
