@@ -17,6 +17,19 @@ I use Supabase daily. I know it. I trust it. I'm already self-hosting it for pro
 - Production ready, battle tested & secure tech, not re-inventing the wheel
 - Cloud or self hosting: Fast cloud setup, port to private self hosting later
 
+## Where SupaClaw is different
+
+SupaClaw is not trying to out-feature OpenClaw. It optimizes for a different goal: 
+
+> Supabase-native operations with minimal moving parts + Supabase goodies out of the box (e.g. Admin Dashboard, API's, SDK's).
+
+- **One control plane:** Database, storage, auth, logs, cron, and edge runtime are all native Supabase primitives that can be managed via the built-in Admin Dashboard.
+- **Durable by design:** Inbound events are persisted and queued first, then processed by workers with retry + idempotency semantics.
+- **SQL-driven scheduling:** Scheduled work is managed by Postgres (`pg_cron`) instead of a custom always-on scheduler process.
+- **Serverless worker loop:** Webhook ingest and agent execution run as edge functions, with cron as a durable backstop.
+- **Data properly stored:** Messages, jobs, and tasks are directly inspectable and debuggable in SQL and Supabase dashboard views.
+- **Lower infra overhead:** No dedicated daemon host, no separate queue broker, no extra orchestration layer required.
+
 # Quickstart
 
 Get SupaClaw running in under 5 minutes.
