@@ -2,13 +2,14 @@ import { stepCountIs, streamText } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
 //import { createServiceClient } from "./supabase.ts";
 import { buildInputMessages } from "./context.ts";
 import { createAllTools } from "./tools/index.ts";
-import { getConfigNumber } from "./helpers.ts";
+import { getConfigNumber, getConfigString } from "./helpers.ts";
 import { logger } from "./logger.ts";
 
-export type LLMProvider = "openai" | "anthropic" | "google";
+export type LLMProvider = "openai" | "anthropic" | "google" | "bedrock";
 
 export type ToolStreamEvent =
   | {
@@ -28,7 +29,13 @@ const DEFAULT_MODELS: Record<LLMProvider, string> = {
   openai: "gpt-5.2",
   anthropic: "claude-4-5-opus-latest",
   google: "gemini-2.5-pro",
+  bedrock: "us.anthropic.claude-sonnet-4-20250514-v1:0",
 };
+
+function isLLMProvider(value: string): value is LLMProvider {
+  return value === "openai" || value === "anthropic" || value === "google" ||
+    value === "bedrock";
+}
 
 function resolveProviderModel(provider: LLMProvider, model?: string) {
   const resolvedModel = model || DEFAULT_MODELS[provider];
@@ -48,6 +55,19 @@ function resolveProviderModel(provider: LLMProvider, model?: string) {
       if (!apiKey) throw new Error("GEMINI_API_KEY is not set");
       return createGoogleGenerativeAI({ apiKey })(resolvedModel);
     }
+    case "bedrock": {
+      const region = Deno.env.get("AWS_REGION") ?? "us-east-1";
+      const accessKeyId = Deno.env.get("AWS_BEDROCK_ACCESS_KEY");
+      const secretAccessKey = Deno.env.get("AWS_BEDROCK_SECRET_ACCESS_KEY");
+      if (!accessKeyId || !secretAccessKey) {
+        throw new Error(
+          "AWS_BEDROCK_ACCESS_KEY and AWS_BEDROCK_SECRET_ACCESS_KEY must be set",
+        );
+      }
+      return createAmazonBedrock({ region, accessKeyId, secretAccessKey })(
+        resolvedModel,
+      );
+    }
     default: {
       const _exhaustive: never = provider;
       throw new Error(`Unsupported LLM provider: ${_exhaustive}`);
@@ -57,7 +77,7 @@ function resolveProviderModel(provider: LLMProvider, model?: string) {
 
 export async function runAgent({
   sessionId,
-  provider = "openai",
+  provider,
   model,
   maxSteps = getConfigNumber("agent.max_steps") ?? 5,
   onToolEvent,
@@ -73,7 +93,13 @@ export async function runAgent({
   //const supabase = createServiceClient();
 
   try {
-    const providerModel = resolveProviderModel(provider, model);
+    const configuredProvider = getConfigString("llms.agent.provider");
+    const resolvedProvider = provider ?? configuredProvider ?? "openai";
+    const selectedProvider = isLLMProvider(resolvedProvider)
+      ? resolvedProvider
+      : "openai";
+    const selectedModel = model ?? getConfigString("llms.agent.model");
+    const providerModel = resolveProviderModel(selectedProvider, selectedModel);
 
     const messages = await buildInputMessages({
       sessionId,
