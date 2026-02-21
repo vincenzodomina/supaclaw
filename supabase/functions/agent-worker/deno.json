@@ -1,5 +1,6 @@
 {
   "imports": {
+    "@ai-sdk/amazon-bedrock": "npm:@ai-sdk/amazon-bedrock@^4.0.60",
     "@ai-sdk/anthropic": "npm:@ai-sdk/anthropic@^3.0.45",
     "@ai-sdk/google": "npm:@ai-sdk/google@^3.0.29",
     "@ai-sdk/openai": "npm:@ai-sdk/openai@^3.0.29",
