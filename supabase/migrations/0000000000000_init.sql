@@ -8,17 +8,19 @@ create extension if not exists pg_cron;
 create extension if not exists supabase_vault cascade;
 
 -- Enums
-create type enum_session_channel as enum ('telegram', 'slack', 'whatsapp', 'discord', 'imessage', 'phone', 'email', 'web', 'mobile', 'desktop', 'api');
+create type enum_channel_provider as enum ('telegram', 'slack', 'whatsapp', 'discord', 'imessage', 'phone', 'email', 'web', 'mobile', 'desktop', 'api');
 create type enum_message_role as enum ('assistant', 'user', 'system');
 create type enum_message_type as enum ('text', 'tool-call', 'file');
 create type enum_message_tool_status as enum ('started', 'succeeded', 'failed');
-create type enum_memory_type as enum ('summary', 'pinned_fact');
-create type enum_job_type as enum ('process_message', 'embed_memory', 'embed_message', 'embed_file', 'trigger');
+create type enum_memory_type as enum ('summary', 'pinned_fact', 'note');
+create type enum_job_type as enum ('process_message', 'embed_memory', 'embed_message', 'embed_file', 'trigger', 'run_task');
+create type enum_task_type as enum ('reminder', 'agent_turn', 'backlog');
+create type enum_schedule_type as enum ('once', 'recurring');
 
 -- Tables
 create table if not exists sessions (
   id uuid primary key default gen_random_uuid(),
-  channel enum_session_channel not null,
+  channel enum_channel_provider not null,
   channel_chat_id text not null,
   title text,
   created_at timestamptz not null default now(),
@@ -60,12 +62,12 @@ create table if not exists messages (
   fts tsvector generated always as (to_tsvector('english', content)) stored,
   -- Vector search (384 dims for gte-small)
   embedding extensions.vector(384),
-  provider text not null default 'telegram',
-  provider_update_id text,
-  telegram_message_id text,
-  telegram_chat_id text,
-  telegram_from_user_id text,
-  telegram_sent_at timestamptz,
+  channel enum_channel_provider not null,
+  channel_update_id text,
+  channel_message_id text,
+  channel_chat_id text,
+  channel_from_user_id text,
+  channel_sent_at timestamptz,
   type enum_message_type not null,
   tool_duration_ms int,
   tool_error text,
@@ -79,9 +81,9 @@ create table if not exists messages (
 
 alter table messages enable row level security;
 
-create unique index if not exists messages_provider_update_id_uniq
-  on messages (provider, provider_update_id)
-  where provider_update_id is not null;
+create unique index if not exists messages_channel_update_id_uniq
+  on messages (channel, channel_update_id)
+  where channel_update_id is not null;
 
 create index if not exists messages_session_created_idx
   on messages (session_id, created_at desc);
@@ -94,6 +96,7 @@ create table if not exists memories (
   session_id uuid references sessions(id) on delete cascade,
   type enum_memory_type not null,
   content text not null,
+  url text,
   priority int default 0,
   metadata jsonb default '{}'::jsonb,
   -- Full-text search
@@ -131,6 +134,32 @@ alter table jobs enable row level security;
 
 create index if not exists jobs_due_idx 
   on jobs (status, run_at, id);
+
+create table if not exists tasks (
+  id bigint generated always as identity primary key,
+  name text not null,
+  description text,
+  prompt text,
+  schedule_type enum_schedule_type,
+  run_at timestamptz,
+  cron_expr text,
+  timezone text not null default 'UTC',
+  task_type enum_task_type not null default 'reminder',
+  session_id uuid references sessions(id) on delete set null,
+  enabled_at timestamptz default now(),
+  next_run_at timestamptz,
+  last_run_at timestamptz,
+  last_error text,
+  run_count int not null default 0,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table tasks enable row level security;
+
+create index if not exists tasks_due_idx
+  on tasks (enabled_at, next_run_at)
+  where enabled_at is not null and next_run_at is not null;
 
 -- Functions
 create or replace function enqueue_job(
@@ -235,11 +264,59 @@ begin
 end;
 $$;
 
--- Schedule worker every minute
+-- Enqueue due tasks into the jobs queue.
+-- Called by pg_cron every minute before the worker is invoked.
+create or replace function enqueue_due_tasks()
+returns int
+language plpgsql
+as $$
+declare
+  v_count int := 0;
+  v_task record;
+begin
+  for v_task in
+    select *
+    from tasks
+    where enabled_at is not null
+      and next_run_at is not null
+      and next_run_at <= now()
+    for update skip locked
+  loop
+    perform enqueue_job(
+      p_dedupe_key := 'task:' || v_task.id || ':' || extract(epoch from v_task.next_run_at)::bigint::text,
+      p_type := 'run_task',
+      p_payload := jsonb_build_object(
+        'task_id', v_task.id,
+        'task_type', v_task.task_type,
+        'prompt', v_task.prompt,
+        'session_id', v_task.session_id
+      ),
+      p_run_at := now(),
+      p_max_attempts := 3
+    );
+
+    -- Clear next_run_at to prevent re-enqueue on the next cron tick.
+    -- The worker recomputes it for recurring tasks after successful execution.
+    -- One-shot tasks also get disabled.
+    if v_task.schedule_type = 'once' then
+      update tasks set next_run_at = null, enabled_at = null, updated_at = now() where id = v_task.id;
+    else
+      update tasks set next_run_at = null, updated_at = now() where id = v_task.id;
+    end if;
+
+    v_count := v_count + 1;
+  end loop;
+
+  return v_count;
+end;
+$$;
+
+-- Schedule worker every minute (enqueue due tasks first, then invoke the worker).
 select cron.schedule(
   'supaclaw-agent-worker',
   '* * * * *',
   $$
+  select enqueue_due_tasks();
   select net.http_post(
     url := (select decrypted_secret from vault.decrypted_secrets where name='project_url')
            || '/functions/v1/agent-worker',
@@ -389,7 +466,16 @@ begin
         limit least(match_count, 30) * 2
       )
       select
-        (to_jsonb(base) - 'embedding' - 'fts') as row_json,
+        (
+          (to_jsonb(base) - 'embedding' - 'fts')
+          || jsonb_build_object(
+            'score',
+            (
+              coalesce(1.0 / (rrf_k + full_text.rank_ix), 0.0) * full_text_weight +
+              coalesce(1.0 / (rrf_k + semantic.rank_ix), 0.0) * semantic_weight
+            )
+          )
+        ) as row_json,
         (
           coalesce(1.0 / (rrf_k + full_text.rank_ix), 0.0) * full_text_weight +
           coalesce(1.0 / (rrf_k + semantic.rank_ix), 0.0) * semantic_weight
@@ -436,7 +522,16 @@ begin
         limit least(match_count, 30) * 2
       )
       select
-        (to_jsonb(base) - 'embedding' - 'fts') as row_json,
+        (
+          (to_jsonb(base) - 'embedding' - 'fts')
+          || jsonb_build_object(
+            'score',
+            (
+              coalesce(1.0 / (rrf_k + full_text.rank_ix), 0.0) * full_text_weight +
+              coalesce(1.0 / (rrf_k + semantic.rank_ix), 0.0) * semantic_weight
+            )
+          )
+        ) as row_json,
         (
           coalesce(1.0 / (rrf_k + full_text.rank_ix), 0.0) * full_text_weight +
           coalesce(1.0 / (rrf_k + semantic.rank_ix), 0.0) * semantic_weight
@@ -486,7 +581,16 @@ begin
         limit least(match_count, 30) * 2
       )
       select
-        (to_jsonb(base) - 'embedding' - 'fts') as row_json,
+        (
+          (to_jsonb(base) - 'embedding' - 'fts')
+          || jsonb_build_object(
+            'score',
+            (
+              coalesce(1.0 / (rrf_k + full_text.rank_ix), 0.0) * full_text_weight +
+              coalesce(1.0 / (rrf_k + semantic.rank_ix), 0.0) * semantic_weight
+            )
+          )
+        ) as row_json,
         (
           coalesce(1.0 / (rrf_k + full_text.rank_ix), 0.0) * full_text_weight +
           coalesce(1.0 / (rrf_k + semantic.rank_ix), 0.0) * semantic_weight
@@ -518,7 +622,7 @@ on conflict (id) do nothing;
 -- ============================================================================
 -- Security posture (recommended hardening)
 -- ============================================================================
--- This project is intended to be single-user (Telegram bot + Edge Functions).
+-- This project is intended to be single-user (Chat provider bot + Edge Functions).
 -- Supabase exposes SQL functions in exposed schemas (e.g. `public`) as RPC endpoints.
 -- PostgreSQL defaults grant EXECUTE on functions to PUBLIC, which includes `anon` and `authenticated`.
 -- Locking down function EXECUTE prevents abuse (e.g. enqueueing jobs / triggering LLM spend).
@@ -543,6 +647,9 @@ grant execute on function public.job_succeed(bigint) to service_role;
 
 revoke execute on function public.job_fail(bigint, text, int) from public;
 grant execute on function public.job_fail(bigint, text, int) to service_role;
+
+revoke execute on function public.enqueue_due_tasks() from public;
+grant execute on function public.enqueue_due_tasks() to service_role;
 
 revoke execute on function public.enqueue_embedding_job() from public;
 grant execute on function public.enqueue_embedding_job() to service_role;

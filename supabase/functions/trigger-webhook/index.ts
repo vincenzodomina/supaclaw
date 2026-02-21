@@ -15,6 +15,7 @@ const ALLOWED_JOB_TYPES = new Set([
   "embed_memory",
   "embed_message",
   "embed_file",
+  "run_task",
 ]);
 
 type AuthContext =

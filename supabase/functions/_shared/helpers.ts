@@ -84,6 +84,67 @@ export function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
+const URL_RE = /^https?:\/\//;
+
+function truncVal(v: unknown, max: number): string {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "string") {
+    if (URL_RE.test(v)) {
+      try {
+        const u = new URL(v);
+        const short = u.hostname + u.pathname;
+        return short.length <= max ? short : short.slice(0, max - 1) + "…";
+      } catch { /* fall through */ }
+    }
+    return v.length <= max ? v : v.slice(0, max - 1) + "…";
+  }
+  if (typeof v !== "object") return String(v);
+  if (Array.isArray(v)) return v.length === 0 ? "[]" : `[${v.length} items]`;
+  const s = JSON.stringify(v);
+  return s.length <= max ? s : s.slice(0, max - 1) + "…";
+}
+
+/**
+ * Produce a compact, human-readable summary of an unknown tool
+ * input/output for display in Telegram.  Parses JSON strings, walks
+ * objects showing `key: value` pairs with long values / URLs shortened,
+ * and caps total length.
+ */
+export function summarize(
+  raw: unknown,
+  maxVal = 60,
+  maxTotal = 300,
+): string {
+  let parsed = raw;
+  if (typeof raw === "string") {
+    try {
+      parsed = JSON.parse(raw);
+    } catch { /* keep as string */ }
+  }
+  if (parsed === null || parsed === undefined) return "";
+  if (typeof parsed !== "object") return truncVal(parsed, maxTotal);
+
+  if (Array.isArray(parsed)) {
+    if (parsed.length === 0) return "[]";
+    const first = summarize(parsed[0], maxVal, maxVal);
+    return parsed.length === 1 ? first : `${first} +${parsed.length - 1} more`;
+  }
+
+  const entries = Object.entries(parsed as Record<string, unknown>);
+  let result = "";
+  let used = 0;
+  for (const [k, v] of entries) {
+    const part = `${k}: ${truncVal(v, maxVal)}`;
+    const next = used === 0 ? part : `${result}, ${part}`;
+    if (next.length > maxTotal && used > 0) {
+      return `${result} +${entries.length - used} more`;
+    }
+    result = next;
+    used++;
+  }
+  return result.length > maxTotal ? result.slice(0, maxTotal - 1) + "…" : result;
+}
+
 export function jsonResponse(data: unknown, init?: ResponseInit) {
   const headers = new Headers(init?.headers);
   headers.set("content-type", "application/json; charset=utf-8");

@@ -22,6 +22,7 @@ This document explains how SupaClaw works under the hood and how it differs from
 │  │ • sessions  │  │ • workspace  │  │ • users  │  │
 │  │ • messages  │  │   /.agents/**│  │ • tokens │  │
 │  │ • jobs      │  │   /files/**  │  │          │  │
+│  │ • tasks     │  │              │  │          │  │
 │  └─────────────┘  └──────────────┘  └──────────┘  │
 │                                                   │
 │  ┌─────────────────────────────────────────────┐  │
@@ -53,6 +54,9 @@ This document explains how SupaClaw works under the hood and how it differs from
 
 The smallest architecture that satisfies the PRD is a DB-backed job queue + worker + edge functions.
 Webhook enqueues; worker processes; cron ensures eventual execution.
+
+SupaClaw is intentionally built as DB queue + worker, where cron is the Supabase-managed "always-on" scheduler (so there is no need for a daemon).
+
 Pros:
   - Reliable, retryable, idempotent
   - Natural place for scheduled tasks + triggers
@@ -66,9 +70,11 @@ Least amount of code:
     - Trigger endpoint just enqueues jobs (optional)
   - Everything else is Supabase-managed (DB, storage, cron, logs).
 
-### Confirmed decisions (what we’re building)
+The worker only calls the LLM when there are due jobs, so this acts as a minimal “heartbeat”.
+
+### Confirmed decisions (what we're building)
 - Async: Telegram webhook only ingests + enqueues; worker processes jobs.
-- Always-on (like): Event-driven for chat + cron for scheduled tasks + minimal “heartbeat” (only checks for due jobs, no “think loop”).
+- Always-on (like): Event-driven for chat + cron for scheduled tasks + minimal "heartbeat" (only checks for due jobs, no "think loop").
 - Sessions: 1 Telegram chat = 1 session (groups = multiple sessions), but only your Telegram user ID is allowed.
 - No commands in Telegram (yet).
 - Single-user: no owner_id, no multi-tenant/RLS complexity.
@@ -81,7 +87,8 @@ Least amount of code:
 - **Postgres (source of truth)**
   - `sessions`: one per conversation surface (Telegram chat)
   - `messages`: all inbound/outbound messages (append-only)
-  - `jobs`: queued units of work (process inbound message, run reminder, run trigger)
+  - `jobs`: queued units of work (process inbound message, run task, embed, trigger) — dedupe keys prevent duplicates, attempt tracking enables retries with backoff, and rows are inspectable for debugging
+  - `tasks`: scheduled task definitions (one-shot reminders, recurring cron jobs, or unscheduled backlog items)
   - `memories`: store/read/search tools to manage context across sessions
   - `files`: metadata, vectors, relation to messages
 
@@ -91,27 +98,33 @@ Least amount of code:
     - `<folder>/**/<file>`: user workspace project folders and files the agent can read/write
 
 - **Edge Functions (Deno)**
-  - `telegram-webhook`: verifies request, normalizes message, writes `messages`, enqueues a `job`
-  - `agent-worker`: claims jobs (SKIP LOCKED), builds context, calls LLM, persists outputs, sends outbound message
+  - `telegram-webhook`: verifies request, normalizes message, writes `messages`, enqueues a `job`, sends an immediate typing indicator, kicks `agent-worker` immediately (best-effort)
+  - `agent-worker`: claims jobs (SKIP LOCKED), builds context, starts a typing keepalive loop, calls LLM, streams partial replies to Telegram (draft message edits), persists outputs, sends outbound message, stops typing loop
   - `trigger-webhook`: authenticated endpoint for external apps to enqueue jobs
 
 - **Cron**
-  - Runs `agent-worker` on a short interval (e.g. every 1 min) to ensure eventual processing + scheduled tasks.
-  - Scheduled tasks are just `jobs` with `run_at`.
+  - Runs every minute via pg_cron: first calls `enqueue_due_tasks()` to move due `tasks` into the `jobs` queue, then invokes `agent-worker` via pg_net.
+  - Acts as the durable backstop for chat message jobs and the sole driver for scheduled tasks, embeddings, and triggers.
+  - One-shot tasks (`schedule_type='once'`) auto-disable after firing.
+  - Recurring tasks (`schedule_type='recurring'`) get their `next_run_at` recomputed by the worker after each run (using croner for cron expression parsing).
+  - Unscheduled tasks (no `schedule_type`) act as backlog items — tracked but never auto-fired.
 
 #### Core flows
 - **Inbound message**
-  1. Telegram → `telegram-webhook`
-  2. `telegram-webhook` validates secret, upserts session, inserts inbound message, inserts `job(type="process_message")`
-  3. Returns 200 immediately
-  4. `agent-worker` picks job, composes prompt (SOUL + recent messages + retrieved memory), calls LLM, runs tools, persists, sends reply via Telegram API
+  1. Telegram sends update to `telegram-webhook`
+  2. `telegram-webhook` validates secret, upserts session, inserts inbound message, enqueues `job(type="process_message")`, sends typing indicator immediately
+  3. Webhook kicks `agent-worker` immediately (best-effort, failure swallowed) and returns `200 OK`
+  4. `agent-worker` claims the job, starts a typing keepalive loop (refreshes every ~4s, auto-stops after ~2min), composes prompt (SOUL + recent messages + retrieved memory), calls LLM, streams partial replies via Telegram draft edits (partial or block mode), runs tools, finalizes reply, stops typing loop
+  5. If the immediate kick failed, cron picks up the job on the next tick (within ~60s)
 
 - **Scheduled task / reminder**
-  1. A row in `jobs` becomes due (`run_at <= now()`)
-  2. Cron-triggered `agent-worker` processes it the same way
+  1. Agent (or user via chat) creates a `tasks` row using the `cron` tool (with schedule_type, run_at or cron_expr, and a prompt)
+  2. Every minute, `enqueue_due_tasks()` checks for tasks where `next_run_at <= now()`, enqueues a `job(type="run_task")`, and clears `next_run_at` to prevent double-fire
+  3. `agent-worker` claims the job, inserts the task prompt as a message in the bound session, generates an agent reply (with full tool access), delivers via channel provider
+  4. For recurring tasks, the worker recomputes `next_run_at` from the cron expression; for one-shot tasks, the task is disabled
 
-- **External trigger (nice-to-have but aligns with your “avoid heartbeat tokens”)**
-  - `trigger-webhook` creates jobs so external systems can enqueue deterministic work without “agent polling”
+- **External trigger (nice-to-have but aligns with your "avoid heartbeat tokens")**
+  - `trigger-webhook` creates jobs so external systems can enqueue deterministic work without "agent polling"
 
 
 
@@ -129,15 +142,20 @@ Least amount of code:
    - upserts `sessions`
    - inserts `messages(role='user')`
    - enqueues `jobs(type='process_message')`
+   - sends typing indicator (`sendChatAction`)
+   - kicks `agent-worker` immediately (best-effort)
+   - returns 200 OK
    │
    ▼
-3. Cron (pg_cron + pg_net) invokes `agent-worker`
+3. `agent-worker` (triggered by immediate kick or cron)
    - claims jobs (SKIP LOCKED)
    - retrieves `.agents/AGENTS.md` (and other persona files) from Storage
    - retrieves memories via hybrid search
+   - starts typing keepalive loop (~4s refresh, ~2min timeout)
    - calls LLM provider (OpenAI or Anthropic)
+   - streams partial replies to Telegram (draft message edits)
    - inserts `messages(role='assistant')` linked to the user messages
-   - sends replies via Provider API
+   - finalizes reply via Provider API, stops typing loop
 ```
 
 
@@ -160,13 +178,16 @@ Least amount of code:
 ### Cron Job Flow
 
 ```
-1. pg_cron triggers scheduled query
+1. pg_cron triggers scheduled query (every minute)
    │
    ▼
-2. pg_net makes HTTP POST to `/functions/v1/agent-worker`
+2. Checks due tasks table and enqueues a job to run task
    │
    ▼
-3. `agent-worker` processes due jobs and exits fast if none are due
+3. pg_net makes HTTP POST to `/functions/v1/agent-worker`
+   │
+   ▼
+4. `agent-worker` claims jobs and exits fast if no jobs are due
 ```
 
 ## Security Notes
@@ -180,7 +201,7 @@ Least amount of code:
 | Feature | OpenClaw | SupaClaw |
 |---------|----------|----------|
 | **Storage** | Local SQLite + filesystem | Supabase Storage + PostgreSQL |
-| **Cron** | Custom scheduler | Supabase pg_cron |
+| **Cron** | Custom in-process scheduler (2000+ lines) | pg_cron + `tasks` table + `enqueue_due_tasks()` SQL function |
 | **Agent Loop** | Built-in | Supabase Edge Functions worker + DB jobs |
 | **Files** | Local filesystem | Supabase Storage buckets |
 | **Config** | Local YAML | Supabase DB + env vars |

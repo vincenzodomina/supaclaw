@@ -1,16 +1,28 @@
 import { createServiceClient } from "../_shared/supabase.ts";
-import { mustGetEnv, timingSafeEqual, getConfigBoolean, getConfigString, jsonResponse, textResponse } from "../_shared/helpers.ts";
-import { telegramSendMessage, telegramEditMessageText } from "../_shared/telegram.ts";
+import {
+  getConfigBoolean,
+  jsonResponse,
+  mustGetEnv,
+  summarize,
+  textResponse,
+  timingSafeEqual,
+} from "../_shared/helpers.ts";
+import {
+  createTelegramDraftStream,
+  TELEGRAM_STREAM_PARAMS,
+  telegramEditMessageText,
+  telegramSendChatAction,
+  telegramSendChunkedMessage,
+  telegramSendMessage,
+  type TelegramStreamMode,
+} from "../_shared/telegram.ts";
 import { logger } from "../_shared/logger.ts";
 import {
-  buildSystemPrompt,
-  type ChatMessage,
-  type LLMProvider,
+  runAgent,
   type ToolStreamEvent,
-  generateAgentReply,
-} from "../_shared/llm.ts";
-import { downloadTextFromWorkspace } from "../_shared/storage.ts";
+} from "../_shared/agent.ts";
 import { embedText } from "../_shared/embeddings.ts";
+import { computeNextRun } from "../_shared/tools/cron.ts";
 
 type JobRow = {
   id: number;
@@ -18,20 +30,10 @@ type JobRow = {
   payload: Record<string, unknown>;
 };
 
-type MemoryCandidate = {
-  type: "pinned_fact" | "summary";
-  content: string;
-  session_id: string | null;
-};
-
-type RecentMessage = {
-  role: "system" | "user" | "assistant";
-  content: string;
-};
-
 const supabase = createServiceClient();
 const FALLBACK_REPLY =
   "I hit a temporary issue generating a response. Please try again in a moment.";
+const MESSAGE_STREAM_MODE: TelegramStreamMode = TELEGRAM_STREAM_PARAMS.mode;
 
 function isAuthorized(req: Request) {
   const expected = mustGetEnv("WORKER_SECRET");
@@ -73,8 +75,8 @@ async function jobFail(
 async function processProcessMessage(job: JobRow) {
   logger.info("job.process_message.start", { jobId: job.id });
   const sessionId = job.payload.session_id as string | undefined;
-  const updateId = job.payload.provider_update_id as string | undefined;
-  const telegramChatId = job.payload.telegram_chat_id as string | undefined;
+  const updateId = job.payload.channel_update_id as string | undefined;
+  const telegramChatId = job.payload.channel_chat_id as string | undefined;
 
   if (!sessionId || !updateId || !telegramChatId) {
     throw new Error("Invalid process_message payload");
@@ -83,9 +85,9 @@ async function processProcessMessage(job: JobRow) {
   // Fetch the inbound message content
   const { data: inbound, error: iErr } = await supabase
     .from("messages")
-    .select("id, content, created_at")
+    .select("id, content, created_at, channel")
     .eq("session_id", sessionId)
-    .eq("provider_update_id", updateId)
+    .eq("channel_update_id", updateId)
     .eq("role", "user")
     .maybeSingle();
   if (iErr) throw new Error(`Failed to load inbound message: ${iErr.message}`);
@@ -104,7 +106,7 @@ async function processProcessMessage(job: JobRow) {
   // - If it exists but wasn't delivered yet, deliver now and mark sent.
   const { data: existingReplies, error: rErr } = await supabase
     .from("messages")
-    .select("id, content, telegram_chat_id, telegram_sent_at")
+    .select("id, content, channel_chat_id, channel_sent_at")
     .eq("reply_to_message_id", inbound.id)
     .eq("role", "assistant")
     .eq("type", "text")
@@ -115,14 +117,14 @@ async function processProcessMessage(job: JobRow) {
   }
   const existingReply = existingReplies?.[0] ?? null;
   if (existingReply) {
-    if (existingReply.telegram_sent_at) return;
+    if (existingReply.channel_sent_at) return;
     logger.info("job.process_message.redeliver_pending", {
       jobId: job.id,
       replyId: existingReply.id,
     });
 
     const existingChatId =
-      existingReply?.telegram_chat_id?.toString()?.trim() || telegramChatId;
+      existingReply?.channel_chat_id?.toString()?.trim() || telegramChatId;
     let textToDeliver = (existingReply.content ?? "").trim();
     if (!textToDeliver) {
       logger.warn("job.process_message.redeliver_empty_content", {
@@ -130,12 +132,13 @@ async function processProcessMessage(job: JobRow) {
         replyId: existingReply.id,
         inboundId: inbound.id,
       });
-      textToDeliver = await buildAssistantReply({
+      textToDeliver = await runAgentHandler({
         jobId: job.id,
         sessionId,
         inboundId: inbound.id,
         inboundContent: inbound.content,
         telegramChatId,
+        channel: inbound.channel,
       });
       const { error: repairErr } = await supabase
         .from("messages")
@@ -148,14 +151,14 @@ async function processProcessMessage(job: JobRow) {
       }
     }
 
-    await telegramSendMessage({
+    await telegramSendChunkedMessage({
       chatId: existingChatId,
       text: textToDeliver,
     });
 
     const { error: deliveredErr } = await supabase
       .from("messages")
-      .update({ telegram_sent_at: new Date().toISOString() })
+      .update({ channel_sent_at: new Date().toISOString() })
       .eq("id", existingReply.id);
     if (deliveredErr) {
       // Warn-only: message was already sent; throwing would cause a retry and duplicate delivery.
@@ -172,15 +175,7 @@ async function processProcessMessage(job: JobRow) {
     return;
   }
 
-  const reply = await buildAssistantReply({
-    jobId: job.id,
-    sessionId,
-    inboundId: inbound.id,
-    inboundContent: inbound.content,
-    telegramChatId,
-  });
-
-  // Persist assistant message before delivery; retries will deliver pending messages.
+  // Persist assistant placeholder before delivery; retries can repair/resend this row.
   const { data: savedReply, error: saveErr } = await supabase
     .from("messages")
     .insert({
@@ -188,10 +183,10 @@ async function processProcessMessage(job: JobRow) {
       reply_to_message_id: inbound.id,
       role: "assistant",
       type: "text",
-      content: reply,
-      provider: "telegram",
-      telegram_chat_id: telegramChatId,
-      telegram_sent_at: null,
+      content: "",
+      channel: inbound.channel,
+      channel_chat_id: telegramChatId,
+      channel_sent_at: null,
     })
     .select("id")
     .single();
@@ -199,11 +194,32 @@ async function processProcessMessage(job: JobRow) {
     throw new Error(`Failed to persist assistant message: ${saveErr.message}`);
   }
 
-  await telegramSendMessage({ chatId: telegramChatId, text: reply });
+  const reply = await runAgentHandler({
+    jobId: job.id,
+    sessionId,
+    inboundId: inbound.id,
+    inboundContent: inbound.content,
+    telegramChatId,
+    channel: inbound.channel,
+    streamMode: MESSAGE_STREAM_MODE,
+  });
+
+  const { error: contentErr } = await supabase
+    .from("messages")
+    .update({ content: reply })
+    .eq("id", savedReply.id);
+  if (contentErr) {
+    // Warn-only: reply is already delivered; retrying would likely duplicate delivery.
+    logger.warn("job.process_message.update_content_failed", {
+      jobId: job.id,
+      replyId: savedReply.id,
+      error: contentErr,
+    });
+  }
 
   const { error: deliveredErr } = await supabase
     .from("messages")
-    .update({ telegram_sent_at: new Date().toISOString() })
+    .update({ channel_sent_at: new Date().toISOString() })
     .eq("id", savedReply.id);
   if (deliveredErr) {
     // Warn-only: message was already sent; throwing would cause a retry and duplicate delivery.
@@ -219,113 +235,23 @@ async function processProcessMessage(job: JobRow) {
   });
 }
 
-async function buildAssistantReply(params: {
+async function runAgentHandler(params: {
   jobId: number;
   sessionId: string;
   inboundId: number;
   inboundContent: string;
   telegramChatId: string;
+  channel: string;
+  streamMode?: TelegramStreamMode;
 }) {
-  const [agents, soul, identity, user, bootstrap, heartbeat, tools, memory] =
-    await Promise.all([
-      downloadTextFromWorkspace(".agents/AGENTS.md", { optional: true }),
-      downloadTextFromWorkspace(".agents/SOUL.md", { optional: true }),
-      downloadTextFromWorkspace(".agents/IDENTITY.md", { optional: true }),
-      downloadTextFromWorkspace(".agents/USER.md", { optional: true }),
-      downloadTextFromWorkspace(".agents/BOOTSTRAP.md", { optional: true }),
-      downloadTextFromWorkspace(".agents/HEARTBEAT.md", { optional: true }),
-      downloadTextFromWorkspace(".agents/TOOLS.md", { optional: true }),
-      downloadTextFromWorkspace(".agents/MEMORY.md", { optional: true }),
-    ]);
-
-  // Memory retrieval in one query (pinned facts + summaries), then split by type.
-  // We fetch a slightly larger candidate pool to preserve quality after filtering.
-  let memoryCandidates: MemoryCandidate[] = [];
-  try {
-    const queryEmbedding = await embedText(params.inboundContent);
-    logger.debug("job.process_message.embedding_ready", {
-      jobId: params.jobId,
-      inboundId: params.inboundId,
-    });
-    const { data: hybrid, error: memErr } = await supabase.rpc("hybrid_search", {
-      query_text: params.inboundContent,
-      query_embedding: queryEmbedding,
-      match_count: 30,
-      search_tables: ["memories"],
-      filter_type: ["pinned_fact", "summary"],
-      filter_session_id: null,
-    });
-    if (memErr) {
-      throw new Error(`hybrid_search failed: ${memErr.message}`);
-    }
-    memoryCandidates = (hybrid?.memories ?? []) as MemoryCandidate[];
-  } catch (error) {
-    logger.warn("job.process_message.memory_search_failed", {
-      jobId: params.jobId,
-      inboundId: params.inboundId,
-      message: error instanceof Error ? error.message : String(error),
-      error,
-    });
-  }
-
-  const pinnedFacts: MemoryCandidate[] = [];
-  const summaries: MemoryCandidate[] = [];
-  for (const memory of memoryCandidates) {
-    if (memory.type === "pinned_fact" && pinnedFacts.length < 5) {
-      pinnedFacts.push(memory);
-      continue;
-    }
-    if (
-      memory.type === "summary" && memory.session_id === params.sessionId &&
-      summaries.length < 5
-    ) {
-      summaries.push(memory);
-    }
-    if (pinnedFacts.length >= 5 && summaries.length >= 5) break;
-  }
-
-  const memoryStrings = [...pinnedFacts, ...summaries].map((m) =>
-    `[${m.type}] ${m.content}`
-  );
-
-  const system = await buildSystemPrompt({
-    agents: agents ?? undefined,
-    soul: soul ?? undefined,
-    identity: identity ?? undefined,
-    user: user ?? undefined,
-    bootstrap: bootstrap ?? undefined,
-    heartbeat: heartbeat ?? undefined,
-    tools: tools ?? undefined,
-    memory: memory ?? undefined,
-    memories: memoryStrings,
-  });
-
-  // Build short chat context (last N messages).
-  // Query newest first for index efficiency, then reverse for chronological model input.
-  const { data: recent, error: recentErr } = await supabase
-    .from("messages")
-    .select("role, content")
-    .eq("session_id", params.sessionId)
-    .eq("type", "text")
-    .in("role", ["user", "assistant"])
-    .order("created_at", { ascending: false })
-    .limit(20);
-  if (recentErr) {
-    throw new Error(`Failed to load recent messages: ${recentErr.message}`);
-  }
-
-  const messages: ChatMessage[] = [
-    { role: "system", content: system },
-    ...(recent ?? []).reverse().map((m: RecentMessage) => ({
-      role: m.role,
-      content: m.content,
-    })),
-  ];
-
   // Tool-call stream handler: persist each tool call as a timeline row + optional Telegram rendering
-  const showToolCalls = getConfigBoolean("channels.telegram.show_tool_calls") === true;
+  const showToolCalls =
+    getConfigBoolean("channels.telegram.show_tool_calls") === true;
   let toolSeq = 0;
-  const toolState = new Map<string, { rowId: number; tgMsgId?: string; toolName: string; startedAt: number }>();
+  const toolState = new Map<
+    string,
+    { rowId: number; tgMsgId?: string; toolName: string; startedAt: number }
+  >();
 
   const onToolEvent = async (event: ToolStreamEvent) => {
     if (event.type === "tool-call-start") {
@@ -338,9 +264,9 @@ async function buildAssistantReply(params: {
         content: JSON.stringify(event.args),
         tool_name: event.toolName,
         tool_status: "started",
-        provider: "telegram",
-        provider_update_id: `tool:${params.inboundId}:${toolSeq}`,
-        telegram_chat_id: params.telegramChatId,
+        channel: "telegram",
+        channel_update_id: `tool:${params.inboundId}:${event.toolCallId}`,
+        channel_chat_id: params.telegramChatId,
       }).select("id").single();
 
       if (error) {
@@ -353,11 +279,14 @@ async function buildAssistantReply(params: {
         try {
           tgMsgId = await telegramSendMessage({
             chatId: params.telegramChatId,
-            text: `${event.toolName} — started`,
+            text: `⚙️ ${event.toolName} ${summarize(event.args)}`,
           });
           if (tgMsgId) {
             await supabase.from("messages")
-              .update({ telegram_message_id: tgMsgId, telegram_sent_at: new Date().toISOString() })
+              .update({
+                channel_message_id: tgMsgId,
+                channel_sent_at: new Date().toISOString(),
+              })
               .eq("id", data.id);
           }
         } catch (e) {
@@ -365,7 +294,12 @@ async function buildAssistantReply(params: {
         }
       }
 
-      toolState.set(event.toolCallId, { rowId: data.id, toolName: event.toolName, startedAt: Date.now(), tgMsgId });
+      toolState.set(event.toolCallId, {
+        rowId: data.id,
+        toolName: event.toolName,
+        startedAt: Date.now(),
+        tgMsgId,
+      });
     } else {
       const state = toolState.get(event.toolCallId);
       if (!state) return;
@@ -380,31 +314,68 @@ async function buildAssistantReply(params: {
         await telegramEditMessageText({
           chatId: params.telegramChatId,
           messageId: state.tgMsgId,
-          text: `${event.toolName} — succeeded`,
-        }).catch((e: unknown) => logger.warn("tool-call.telegram_edit_failed", { error: e }));
+          text: `✅ ${event.toolName} ${summarize(event.result)}`,
+        }).catch((e: unknown) =>
+          logger.warn("tool-call.telegram_edit_failed", { error: e })
+        );
       }
     }
   };
 
   let rawReply: string;
+  const draft = params.streamMode
+    ? createTelegramDraftStream({
+      chatId: params.telegramChatId,
+      mode: params.streamMode,
+      throttleMs: TELEGRAM_STREAM_PARAMS.throttleMs,
+      minInitialChars: TELEGRAM_STREAM_PARAMS.minInitialChars,
+      textLimit: TELEGRAM_STREAM_PARAMS.textLimit,
+      chunkSoftLimit: TELEGRAM_STREAM_PARAMS.chunkSoftLimit,
+      blockMinChars: TELEGRAM_STREAM_PARAMS.blockMinChars,
+    })
+    : null;
+  let typingInterval: ReturnType<typeof setInterval> | undefined;
+  if (draft) {
+    const sendTyping = () =>
+      telegramSendChatAction({
+        chatId: params.telegramChatId,
+        action: "typing",
+      }).catch(() => {});
+    sendTyping();
+    typingInterval = setInterval(sendTyping, 4_000);
+  }
   try {
-    const provider = (getConfigString("llms.agent.provider") ?? "openai") as LLMProvider;
-    const model = getConfigString("llms.agent.model") ?? undefined;
-    rawReply = await generateAgentReply({ messages, provider, model, onToolEvent });
+    rawReply = await runAgent({
+      sessionId: params.sessionId,
+      onToolEvent,
+      onTextDelta: async (_delta, fullText) => {
+        if (!draft) return;
+        await draft.update(fullText);
+      },
+    });
   } catch (err) {
+    if (draft) await draft.clearDraft();
     // Mark any pending tool calls as failed
     const errMsg = err instanceof Error ? err.message : String(err);
     for (const [, s] of toolState) {
       await supabase.from("messages")
-        .update({ tool_status: "failed", tool_error: errMsg, tool_duration_ms: Date.now() - s.startedAt })
+        .update({
+          tool_status: "failed",
+          tool_error: errMsg,
+          tool_duration_ms: Date.now() - s.startedAt,
+        })
         .eq("id", s.rowId).eq("tool_status", "started");
       if (showToolCalls && s.tgMsgId) {
         telegramEditMessageText({
-          chatId: params.telegramChatId, messageId: s.tgMsgId, text: `${s.toolName} — failed`,
+          chatId: params.telegramChatId,
+          messageId: s.tgMsgId,
+          text: `❌ ${s.toolName} ${summarize(errMsg)}`,
         }).catch(() => {});
       }
     }
     throw err;
+  } finally {
+    clearInterval(typingInterval);
   }
 
   const reply = rawReply.trim();
@@ -412,15 +383,141 @@ async function buildAssistantReply(params: {
     logger.warn("job.process_message.reply_empty", {
       jobId: params.jobId,
       inboundId: params.inboundId,
-      recentCount: recent?.length ?? 0,
     });
+    if (draft) await draft.finalize(FALLBACK_REPLY);
     return FALLBACK_REPLY;
   }
+  if (draft) await draft.finalize(reply);
   logger.debug("job.process_message.reply_generated", {
     jobId: params.jobId,
     replyLength: reply.length,
   });
   return reply;
+}
+
+async function updateTaskAfterRun(taskId: number) {
+  const { data: task, error } = await supabase
+    .from("tasks")
+    .select("schedule_type, cron_expr, timezone, run_count")
+    .eq("id", taskId)
+    .maybeSingle();
+  if (error || !task) return;
+
+  const patch: Record<string, unknown> = {
+    last_run_at: new Date().toISOString(),
+    run_count: task.run_count + 1,
+    last_error: null,
+    updated_at: new Date().toISOString(),
+  };
+
+  if (task.schedule_type === "recurring" && task.cron_expr) {
+    const next = computeNextRun(task.cron_expr, task.timezone ?? "UTC");
+    patch.next_run_at = next?.toISOString() ?? null;
+  } else if (task.schedule_type === "once") {
+    patch.enabled_at = null;
+  }
+
+  await supabase.from("tasks").update(patch).eq("id", taskId);
+}
+
+async function processRunTask(job: JobRow) {
+  const taskId = job.payload.task_id as number;
+  const prompt = job.payload.prompt as string;
+  const sessionId = job.payload.session_id as string;
+  const taskType = (job.payload.task_type as string) || "reminder";
+
+  if (!taskId || !prompt || !sessionId) {
+    throw new Error("Invalid run_task payload");
+  }
+
+  logger.info("job.run_task.start", { jobId: job.id, taskId, taskType });
+
+  const { data: session, error: sessErr } = await supabase
+    .from("sessions")
+    .select("id, channel, channel_chat_id")
+    .eq("id", sessionId)
+    .maybeSingle();
+  if (sessErr) throw new Error(`Failed to load session: ${sessErr.message}`);
+  if (!session) throw new Error(`Session not found: ${sessionId}`);
+
+  const chatId = session.channel_chat_id;
+  const role = taskType === "agent_turn" ? "user" : "system";
+  const content = taskType === "reminder" ? `Reminder: ${prompt}` : prompt;
+
+  const { data: msg, error: msgErr } = await supabase
+    .from("messages")
+    .insert({
+      session_id: sessionId,
+      role,
+      type: "text",
+      content,
+      channel: session.channel,
+      channel_update_id: `task:${taskId}:${Date.now()}`,
+      channel_chat_id: chatId,
+    })
+    .select("id")
+    .single();
+  if (msgErr) {
+    throw new Error(`Failed to insert task message: ${msgErr.message}`);
+  }
+
+  const { data: saved, error: saveErr } = await supabase
+    .from("messages")
+    .insert({
+      session_id: sessionId,
+      reply_to_message_id: msg.id,
+      role: "assistant",
+      type: "text",
+      content: "",
+      channel: session.channel,
+      channel_chat_id: chatId,
+      channel_sent_at: null,
+    })
+    .select("id")
+    .single();
+  if (saveErr) throw new Error(`Failed to persist reply: ${saveErr.message}`);
+
+  const reply = await runAgentHandler({
+    jobId: job.id,
+    sessionId,
+    inboundId: msg.id,
+    inboundContent: content,
+    telegramChatId: chatId,
+    channel: session.channel,
+    streamMode: MESSAGE_STREAM_MODE,
+  });
+
+  const { error: contentErr } = await supabase
+    .from("messages")
+    .update({ content: reply })
+    .eq("id", saved.id);
+  if (contentErr) {
+    logger.warn("job.run_task.update_content_failed", {
+      jobId: job.id,
+      replyId: saved.id,
+      error: contentErr,
+    });
+  }
+
+  const { error: deliveredErr } = await supabase
+    .from("messages")
+    .update({ channel_sent_at: new Date().toISOString() })
+    .eq("id", saved.id);
+  if (deliveredErr) {
+    logger.warn("job.run_task.mark_delivered_failed", {
+      jobId: job.id,
+      replyId: saved.id,
+      error: deliveredErr,
+    });
+  }
+
+  await updateTaskAfterRun(taskId);
+
+  logger.info("job.run_task.done", {
+    jobId: job.id,
+    taskId,
+    replyId: saved.id,
+  });
 }
 
 function processTrigger(job: JobRow) {
@@ -478,6 +575,7 @@ async function processEmbed(job: JobRow, config: EmbedConfig) {
 
 async function processJob(job: JobRow) {
   if (job.type === "process_message") return await processProcessMessage(job);
+  if (job.type === "run_task") return await processRunTask(job);
   const embedConfig = EMBED_CONFIG[job.type];
   if (embedConfig) return await processEmbed(job, embedConfig);
   if (job.type === "trigger") return processTrigger(job);

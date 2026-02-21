@@ -314,10 +314,9 @@ fi
 if ask_yes_no "${functions_prompt}" "${functions_default}"; then
   supabase functions serve \
     --env-file "supabase/.env.local" \
-    --import-map "supabase/functions/_shared/deno.json" \
     --no-verify-jwt
 else
   printf "\n[install] Setup completed! 🎉\n"
   printf "[install] Start functions later with:\n"
-  printf "  supabase functions serve --env-file supabase/.env.local --import-map supabase/functions/_shared/deno.json --no-verify-jwt\n"
+  printf "  supabase functions serve --env-file supabase/.env.local --no-verify-jwt\n"
 fi
