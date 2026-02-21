@@ -112,12 +112,20 @@ async function kickAgentWorkerNow() {
 function routeHead(req: Request): "trigger" | "telegram" | null {
   const { pathname } = new URL(req.url);
   const parts = pathname.split("/").filter(Boolean);
-  if (parts.length !== 4) return null;
-  if (
-    parts[0] !== "functions" || parts[1] !== "v1" || parts[2] !== "webhook"
-  ) return null;
-  if (parts[3] !== "trigger" && parts[3] !== "telegram") return null;
-  return parts[3];
+  // Edge runtime can forward either "/webhook/<route>" or
+  // "/functions/v1/webhook/<route>" depending on invocation path.
+  const short =
+    parts.length === 2 && parts[0] === "webhook" ? parts[1] : null;
+  const full =
+    parts.length === 4 &&
+      parts[0] === "functions" &&
+      parts[1] === "v1" &&
+      parts[2] === "webhook"
+      ? parts[3]
+      : null;
+  const head = short ?? full;
+  if (head !== "trigger" && head !== "telegram") return null;
+  return head;
 }
 
 async function handleTrigger(req: Request) {
