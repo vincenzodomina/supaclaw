@@ -75,8 +75,8 @@ async function jobFail(
 async function processProcessMessage(job: JobRow) {
   logger.info("job.process_message.start", { jobId: job.id });
   const sessionId = job.payload.session_id as string | undefined;
-  const updateId = job.payload.provider_update_id as string | undefined;
-  const telegramChatId = job.payload.telegram_chat_id as string | undefined;
+  const updateId = job.payload.channel_update_id as string | undefined;
+  const telegramChatId = job.payload.channel_chat_id as string | undefined;
 
   if (!sessionId || !updateId || !telegramChatId) {
     throw new Error("Invalid process_message payload");
@@ -85,9 +85,9 @@ async function processProcessMessage(job: JobRow) {
   // Fetch the inbound message content
   const { data: inbound, error: iErr } = await supabase
     .from("messages")
-    .select("id, content, created_at")
+    .select("id, content, created_at, channel")
     .eq("session_id", sessionId)
-    .eq("provider_update_id", updateId)
+    .eq("channel_update_id", updateId)
     .eq("role", "user")
     .maybeSingle();
   if (iErr) throw new Error(`Failed to load inbound message: ${iErr.message}`);
@@ -106,7 +106,7 @@ async function processProcessMessage(job: JobRow) {
   // - If it exists but wasn't delivered yet, deliver now and mark sent.
   const { data: existingReplies, error: rErr } = await supabase
     .from("messages")
-    .select("id, content, telegram_chat_id, telegram_sent_at")
+    .select("id, content, channel_chat_id, channel_sent_at")
     .eq("reply_to_message_id", inbound.id)
     .eq("role", "assistant")
     .eq("type", "text")
@@ -117,14 +117,14 @@ async function processProcessMessage(job: JobRow) {
   }
   const existingReply = existingReplies?.[0] ?? null;
   if (existingReply) {
-    if (existingReply.telegram_sent_at) return;
+    if (existingReply.channel_sent_at) return;
     logger.info("job.process_message.redeliver_pending", {
       jobId: job.id,
       replyId: existingReply.id,
     });
 
     const existingChatId =
-      existingReply?.telegram_chat_id?.toString()?.trim() || telegramChatId;
+      existingReply?.channel_chat_id?.toString()?.trim() || telegramChatId;
     let textToDeliver = (existingReply.content ?? "").trim();
     if (!textToDeliver) {
       logger.warn("job.process_message.redeliver_empty_content", {
@@ -138,6 +138,7 @@ async function processProcessMessage(job: JobRow) {
         inboundId: inbound.id,
         inboundContent: inbound.content,
         telegramChatId,
+        channel: inbound.channel,
       });
       const { error: repairErr } = await supabase
         .from("messages")
@@ -157,7 +158,7 @@ async function processProcessMessage(job: JobRow) {
 
     const { error: deliveredErr } = await supabase
       .from("messages")
-      .update({ telegram_sent_at: new Date().toISOString() })
+      .update({ channel_sent_at: new Date().toISOString() })
       .eq("id", existingReply.id);
     if (deliveredErr) {
       // Warn-only: message was already sent; throwing would cause a retry and duplicate delivery.
@@ -183,9 +184,9 @@ async function processProcessMessage(job: JobRow) {
       role: "assistant",
       type: "text",
       content: "",
-      provider: "telegram",
-      telegram_chat_id: telegramChatId,
-      telegram_sent_at: null,
+      channel: inbound.channel,
+      channel_chat_id: telegramChatId,
+      channel_sent_at: null,
     })
     .select("id")
     .single();
@@ -199,6 +200,7 @@ async function processProcessMessage(job: JobRow) {
     inboundId: inbound.id,
     inboundContent: inbound.content,
     telegramChatId,
+    channel: inbound.channel,
     streamMode: MESSAGE_STREAM_MODE,
   });
 
@@ -217,7 +219,7 @@ async function processProcessMessage(job: JobRow) {
 
   const { error: deliveredErr } = await supabase
     .from("messages")
-    .update({ telegram_sent_at: new Date().toISOString() })
+    .update({ channel_sent_at: new Date().toISOString() })
     .eq("id", savedReply.id);
   if (deliveredErr) {
     // Warn-only: message was already sent; throwing would cause a retry and duplicate delivery.
@@ -239,6 +241,7 @@ async function runAgentHandler(params: {
   inboundId: number;
   inboundContent: string;
   telegramChatId: string;
+  channel: string;
   streamMode?: TelegramStreamMode;
 }) {
   // Tool-call stream handler: persist each tool call as a timeline row + optional Telegram rendering
@@ -261,9 +264,9 @@ async function runAgentHandler(params: {
         content: JSON.stringify(event.args),
         tool_name: event.toolName,
         tool_status: "started",
-        provider: "telegram",
-        provider_update_id: `tool:${params.inboundId}:${event.toolCallId}`,
-        telegram_chat_id: params.telegramChatId,
+        channel: "telegram",
+        channel_update_id: `tool:${params.inboundId}:${event.toolCallId}`,
+        channel_chat_id: params.telegramChatId,
       }).select("id").single();
 
       if (error) {
@@ -281,8 +284,8 @@ async function runAgentHandler(params: {
           if (tgMsgId) {
             await supabase.from("messages")
               .update({
-                telegram_message_id: tgMsgId,
-                telegram_sent_at: new Date().toISOString(),
+                channel_message_id: tgMsgId,
+                channel_sent_at: new Date().toISOString(),
               })
               .eq("id", data.id);
           }
@@ -448,9 +451,9 @@ async function processRunTask(job: JobRow) {
       role,
       type: "text",
       content,
-      provider: "system",
-      provider_update_id: `task:${taskId}:${Date.now()}`,
-      telegram_chat_id: chatId,
+      channel: session.channel,
+      channel_update_id: `task:${taskId}:${Date.now()}`,
+      channel_chat_id: chatId,
     })
     .select("id")
     .single();
@@ -466,9 +469,9 @@ async function processRunTask(job: JobRow) {
       role: "assistant",
       type: "text",
       content: "",
-      provider: "telegram",
-      telegram_chat_id: chatId,
-      telegram_sent_at: null,
+      channel: session.channel,
+      channel_chat_id: chatId,
+      channel_sent_at: null,
     })
     .select("id")
     .single();
@@ -480,6 +483,7 @@ async function processRunTask(job: JobRow) {
     inboundId: msg.id,
     inboundContent: content,
     telegramChatId: chatId,
+    channel: session.channel,
     streamMode: MESSAGE_STREAM_MODE,
   });
 
@@ -497,7 +501,7 @@ async function processRunTask(job: JobRow) {
 
   const { error: deliveredErr } = await supabase
     .from("messages")
-    .update({ telegram_sent_at: new Date().toISOString() })
+    .update({ channel_sent_at: new Date().toISOString() })
     .eq("id", saved.id);
   if (deliveredErr) {
     logger.warn("job.run_task.mark_delivered_failed", {

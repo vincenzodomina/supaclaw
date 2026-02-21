@@ -156,7 +156,7 @@ Finally, it persists the reply *before* delivering it via Telegram. This way, if
 ```ts
 // Save first
 await supabase.from("messages").insert({
-  role: "assistant", content, telegram_sent_at: null, ...
+  role: "assistant", content, channel_sent_at: null, ...
 });
 
 // Then deliver
@@ -164,7 +164,7 @@ await fetch(`https://api.telegram.org/bot${token}/sendMessage`, { ... });
 
 // Mark delivered
 await supabase.from("messages").update({
-  telegram_sent_at: new Date().toISOString()
+  channel_sent_at: new Date().toISOString()
 }).eq("id", replyId);
 ```
 

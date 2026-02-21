@@ -8,7 +8,7 @@ create extension if not exists pg_cron;
 create extension if not exists supabase_vault cascade;
 
 -- Enums
-create type enum_session_channel as enum ('telegram', 'slack', 'whatsapp', 'discord', 'imessage', 'phone', 'email', 'web', 'mobile', 'desktop', 'api');
+create type enum_channel_provider as enum ('telegram', 'slack', 'whatsapp', 'discord', 'imessage', 'phone', 'email', 'web', 'mobile', 'desktop', 'api');
 create type enum_message_role as enum ('assistant', 'user', 'system');
 create type enum_message_type as enum ('text', 'tool-call', 'file');
 create type enum_message_tool_status as enum ('started', 'succeeded', 'failed');
@@ -20,7 +20,7 @@ create type enum_schedule_type as enum ('once', 'recurring');
 -- Tables
 create table if not exists sessions (
   id uuid primary key default gen_random_uuid(),
-  channel enum_session_channel not null,
+  channel enum_channel_provider not null,
   channel_chat_id text not null,
   title text,
   created_at timestamptz not null default now(),
@@ -62,12 +62,12 @@ create table if not exists messages (
   fts tsvector generated always as (to_tsvector('english', content)) stored,
   -- Vector search (384 dims for gte-small)
   embedding extensions.vector(384),
-  provider text not null default 'telegram',
-  provider_update_id text,
-  telegram_message_id text,
-  telegram_chat_id text,
-  telegram_from_user_id text,
-  telegram_sent_at timestamptz,
+  channel enum_channel_provider not null,
+  channel_update_id text,
+  channel_message_id text,
+  channel_chat_id text,
+  channel_from_user_id text,
+  channel_sent_at timestamptz,
   type enum_message_type not null,
   tool_duration_ms int,
   tool_error text,
@@ -81,9 +81,9 @@ create table if not exists messages (
 
 alter table messages enable row level security;
 
-create unique index if not exists messages_provider_update_id_uniq
-  on messages (provider, provider_update_id)
-  where provider_update_id is not null;
+create unique index if not exists messages_channel_update_id_uniq
+  on messages (channel, channel_update_id)
+  where channel_update_id is not null;
 
 create index if not exists messages_session_created_idx
   on messages (session_id, created_at desc);
@@ -138,7 +138,7 @@ create table if not exists tasks (
   id bigint generated always as identity primary key,
   name text not null,
   description text,
-  prompt text not null,
+  prompt text,
   schedule_type enum_schedule_type,
   run_at timestamptz,
   cron_expr text,
@@ -621,7 +621,7 @@ on conflict (id) do nothing;
 -- ============================================================================
 -- Security posture (recommended hardening)
 -- ============================================================================
--- This project is intended to be single-user (Telegram bot + Edge Functions).
+-- This project is intended to be single-user (Chat provider bot + Edge Functions).
 -- Supabase exposes SQL functions in exposed schemas (e.g. `public`) as RPC endpoints.
 -- PostgreSQL defaults grant EXECUTE on functions to PUBLIC, which includes `anon` and `authenticated`.
 -- Locking down function EXECUTE prevents abuse (e.g. enqueueing jobs / triggering LLM spend).
