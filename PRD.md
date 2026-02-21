@@ -77,6 +77,7 @@ Imagine an AI agent that you can setup with one command in the cloud in under 10
     - Workspace storage is the source of truth: skills live at `.agents/skills/<slug>/SKILL.md`; `sync` is rejected.
     - `list`: returns available skills by scanning `.agents/skills/*` and parsing `SKILL.md` (YAML frontmatter per agentskills.io standard)
     - `load|read`: `load` returns full `SKILL.md`; `read` returns a referenced text file inside the skill folder (root file or one-level path like `references/REFERENCE.md`).
+    - `install`: Given a SKILL.md file or a Github URL it downloads and re-creates the files in Supabase storage to make them available at skill discovery. Works reliably with many Github link formats.
 - **`web_search / web_fetch`** 
     — chain-friendly: returns compact structured results (title/url/snippet/etc.) meant to be followed by `web_fetch` for deeper reads; clamp `count`, snippet sizes, and enforce timeouts.
     - provider-aware + resilient: supports multiple providers with `provider=auto` and fallbacks that prefer free tiers / low-friction setups (use keyless/shared backends when available). Missing keys must not crash the agent run; return actionable structured errors only after fallbacks are exhausted.
