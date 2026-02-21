@@ -12,7 +12,7 @@ create type enum_channel_provider as enum ('telegram', 'slack', 'whatsapp', 'dis
 create type enum_message_role as enum ('assistant', 'user', 'system');
 create type enum_message_type as enum ('text', 'tool-call', 'file');
 create type enum_message_tool_status as enum ('started', 'succeeded', 'failed');
-create type enum_memory_type as enum ('summary', 'pinned_fact');
+create type enum_memory_type as enum ('summary', 'pinned_fact', 'note');
 create type enum_job_type as enum ('process_message', 'embed_memory', 'embed_message', 'embed_file', 'trigger', 'run_task');
 create type enum_task_type as enum ('reminder', 'agent_turn', 'backlog');
 create type enum_schedule_type as enum ('once', 'recurring');
@@ -96,6 +96,7 @@ create table if not exists memories (
   session_id uuid references sessions(id) on delete cascade,
   type enum_memory_type not null,
   content text not null,
+  url text,
   priority int default 0,
   metadata jsonb default '{}'::jsonb,
   -- Full-text search
