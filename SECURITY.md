@@ -14,14 +14,14 @@ This document is both:
 
 ## Architecture (security-relevant)
 
-- **Ingress**: Telegram sends webhook → `telegram-webhook` Edge Function.
+- **Ingress**: Telegram sends webhook → `webhook` Edge Function (`/telegram` route).
   - Verified via Telegram secret header + allowlist of a single Telegram user id.
 - **Persistence**: webhook writes to `public.sessions` + `public.messages`.
 - **Work queue**: webhook enqueues a job via DB RPC (`enqueue_job`).
 - **Worker**: DB cron calls `agent-worker` Edge Function every minute.
   - Authorized via `x-worker-secret`, delivered from **Supabase Vault** (`vault.decrypted_secrets`) inside SQL.
   - Worker claims jobs via DB RPC (`claim_jobs`) and writes results back.
-- **Optional ingress**: `trigger-webhook` Edge Function enqueues jobs.
+- **Optional ingress**: `webhook` Edge Function (`/trigger` route) enqueues jobs.
   - Authorized via either a shared secret or a verified Supabase JWT.
 
 Primary risks in this architecture:
@@ -61,9 +61,8 @@ Applied to `supabase/config.toml`:
   - `[auth].enable_signup = false`
   - `[auth.email].enable_signup = false`
 - **Pinned Edge Function JWT verification settings per function**:
-  - `telegram-webhook`: `verify_jwt = false` (Telegram can’t send Supabase JWTs)
+  - `webhook`: `verify_jwt = false` (Telegram can’t send Supabase JWTs; trigger auth is handled in-code)
   - `agent-worker`: `verify_jwt = false` (cron uses `x-worker-secret`)
-  - `trigger-webhook`: `verify_jwt = false` (supports shared secret + in-code JWT verification)
 
 Reference:
 - Edge Function configuration (`verify_jwt`): https://supabase.com/docs/guides/functions/function-configuration
@@ -168,13 +167,13 @@ Reference:
 - Function configuration: https://supabase.com/docs/guides/functions/function-configuration
 
 **This project’s current posture**
-- `telegram-webhook`: validated by Telegram secret header + `TELEGRAM_ALLOWED_USER_ID` allowlist.
+- `webhook` (`/telegram`): validated by Telegram secret header + `TELEGRAM_ALLOWED_USER_ID` allowlist.
 - `agent-worker`: validated by `x-worker-secret` header (secret stored in Vault and Edge secrets).
-- `trigger-webhook`: validated by Bearer token (shared secret OR Supabase JWT verified against JWKS).
+- `webhook` (`/trigger`): validated by Bearer token (shared secret OR Supabase JWT verified against JWKS).
 
 **Recommendations**
 - Keep webhook secrets long and random (e.g., 32+ bytes).
-- Consider making `trigger-webhook` JWT-only (remove the shared-secret path) if you don’t need backwards compatibility.
+- Consider making the `/trigger` route JWT-only (remove the shared-secret path) if you don’t need it.
 - Keep `verify_jwt` settings committed in `supabase/config.toml` to prevent drift between environments.
 
 ### 7) Disable signups (single-user requirement)

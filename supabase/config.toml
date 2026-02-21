@@ -294,13 +294,10 @@ deno_version = 2
 # so we explicitly disable the platform JWT gate per function.
 #
 # Docs: https://supabase.com/docs/guides/functions/function-configuration
-[functions.telegram-webhook]
-verify_jwt = false
-
 [functions.agent-worker]
 verify_jwt = false
 
-[functions.trigger-webhook]
+[functions.webhook]
 verify_jwt = false
 
 # [edge_runtime.secrets]

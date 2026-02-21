@@ -193,6 +193,122 @@ begin
 end;
 $$;
 
+-- Ingest an inbound text message from any channel provider.
+-- Creates/updates a session, inserts the inbound message idempotently,
+-- and enqueues a process_message job (deduped by channel + update id).
+create or replace function ingest_inbound_text(
+  p_channel text,
+  p_channel_chat_id text,
+  p_channel_update_id text,
+  p_content text,
+  p_channel_message_id text default null,
+  p_channel_from_user_id text default null,
+  p_job_max_attempts int default 10
+)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_channel enum_channel_provider;
+  v_chat_id text;
+  v_update_id text;
+  v_content text;
+  v_message_id text;
+  v_from_user_id text;
+  v_session_id uuid;
+  v_inbound_id bigint;
+  v_job_id bigint;
+  v_dedupe_key text;
+begin
+  if p_channel is null or btrim(p_channel) = '' then
+    raise exception 'ingest_inbound_text: p_channel is required';
+  end if;
+  v_channel := btrim(p_channel)::enum_channel_provider;
+
+  v_chat_id := nullif(btrim(p_channel_chat_id), '');
+  if v_chat_id is null then
+    raise exception 'ingest_inbound_text: p_channel_chat_id is required';
+  end if;
+
+  v_update_id := nullif(btrim(p_channel_update_id), '');
+  if v_update_id is null then
+    raise exception 'ingest_inbound_text: p_channel_update_id is required';
+  end if;
+
+  v_content := nullif(btrim(p_content), '');
+  if v_content is null then
+    raise exception 'ingest_inbound_text: p_content is required';
+  end if;
+
+  v_message_id := nullif(btrim(p_channel_message_id), '');
+  v_from_user_id := nullif(btrim(p_channel_from_user_id), '');
+
+  insert into sessions (channel, channel_chat_id, title, updated_at)
+  values (v_channel, v_chat_id, left(v_content, 80), now())
+  on conflict (channel, channel_chat_id) do update
+    set
+      updated_at = now(),
+      title = coalesce(sessions.title, excluded.title)
+  returning id into v_session_id;
+
+  insert into messages (
+    session_id,
+    role,
+    type,
+    content,
+    channel,
+    channel_update_id,
+    channel_message_id,
+    channel_chat_id,
+    channel_from_user_id,
+    updated_at
+  )
+  values (
+    v_session_id,
+    'user',
+    'text',
+    v_content,
+    v_channel,
+    v_update_id,
+    v_message_id,
+    v_chat_id,
+    v_from_user_id,
+    now()
+  )
+  on conflict (channel, channel_update_id) where channel_update_id is not null do nothing
+  returning id into v_inbound_id;
+
+  if v_inbound_id is null then
+    select id into v_inbound_id
+    from messages
+    where channel = v_channel
+      and channel_update_id = v_update_id
+    order by id desc
+    limit 1;
+  end if;
+
+  v_dedupe_key := v_channel::text || ':process_message:' || v_update_id;
+  v_job_id := enqueue_job(
+    p_dedupe_key := v_dedupe_key,
+    p_type := 'process_message',
+    p_payload := jsonb_build_object(
+      'session_id', v_session_id,
+      'channel_update_id', v_update_id,
+      'channel_chat_id', v_chat_id
+    ),
+    p_run_at := now(),
+    p_max_attempts := p_job_max_attempts
+  );
+
+  return jsonb_build_object(
+    'session_id', v_session_id,
+    'message_id', v_inbound_id,
+    'job_id', v_job_id,
+    'dedupe_key', v_dedupe_key
+  );
+end;
+$$;
+
 
 -- Atomic claim (SKIP LOCKED)
 create or replace function claim_jobs(
@@ -638,6 +754,9 @@ revoke create on schema public from public;
 -- These functions are used by Edge Functions + cron and should not be callable via PostgREST.
 revoke execute on function public.enqueue_job(text, text, jsonb, timestamptz, int) from public;
 grant execute on function public.enqueue_job(text, text, jsonb, timestamptz, int) to service_role;
+
+revoke execute on function public.ingest_inbound_text(text, text, text, text, text, text, int) from public;
+grant execute on function public.ingest_inbound_text(text, text, text, text, text, text, int) to service_role;
 
 revoke execute on function public.claim_jobs(text, int, int) from public;
 grant execute on function public.claim_jobs(text, int, int) to service_role;

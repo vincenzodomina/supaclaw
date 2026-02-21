@@ -522,7 +522,7 @@ async function processRunTask(job: JobRow) {
 
 function processTrigger(job: JobRow) {
   // Trigger jobs are intentionally accepted as no-op for now.
-  // This keeps trigger-webhook usable without creating retry noise.
+  // This keeps the /trigger webhook route usable without creating retry noise.
   void job;
 }
 

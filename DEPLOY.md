@@ -73,9 +73,8 @@ Set secrets and deploy functions:
 
 ```bash
 supabase secrets set --env-file ./supabase/.env
-supabase functions deploy telegram-webhook
+supabase functions deploy webhook
 supabase functions deploy agent-worker
-supabase functions deploy trigger-webhook
 ```
 
 ## Step 6: Configure Telegram Webhook
@@ -86,7 +85,7 @@ Set Telegram webhook with a secret token (Telegram will send the header `X-Teleg
 curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
   -H "Content-Type: application/json" \
   -d "{
-    \"url\": \"${SUPABASE_URL}/functions/v1/telegram-webhook\",
+    \"url\": \"${SUPABASE_URL}/functions/v1/webhook/telegram\",
     \"secret_token\": \"${TELEGRAM_WEBHOOK_SECRET}\"
   }"
 ```

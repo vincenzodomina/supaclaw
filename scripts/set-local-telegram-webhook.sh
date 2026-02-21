@@ -7,7 +7,7 @@ set -euo pipefail
 # 1) Loads shared ngrok helper functions.
 # 2) Loads Telegram secrets from supabase/.env.local.
 # 3) Reuses an existing ngrok HTTPS tunnel or starts one for port 54321.
-# 4) Builds local webhook URL for the telegram edge function endpoint.
+# 4) Builds local webhook URL for the telegram route on the webhook edge function.
 # 5) Calls Telegram setWebhook with TELEGRAM_WEBHOOK_SECRET.
 # 6) Calls Telegram getWebhookInfo to print and verify current webhook status.
 #
@@ -42,7 +42,7 @@ if [[ -z "${NGROK_URL}" ]]; then
   exit 1
 fi
 
-WEBHOOK_URL="${NGROK_URL}/functions/v1/telegram-webhook"
+WEBHOOK_URL="${NGROK_URL}/functions/v1/webhook/telegram"
 
 echo "Using webhook URL: ${WEBHOOK_URL}"
 

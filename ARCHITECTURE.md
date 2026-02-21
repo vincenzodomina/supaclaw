@@ -98,9 +98,10 @@ The worker only calls the LLM when there are due jobs, so this acts as a minimal
     - `<folder>/**/<file>`: user workspace project folders and files the agent can read/write
 
 - **Edge Functions (Deno)**
-  - `telegram-webhook`: verifies request, normalizes message, writes `messages`, enqueues a `job`, sends an immediate typing indicator, kicks `agent-worker` immediately (best-effort)
+  - `webhook`: single ingress endpoint with routes:
+    - `/telegram`: verifies request, normalizes message, calls `ingest_inbound_text()` (session + message + job enqueue), kicks `agent-worker` immediately (best-effort)
+    - `/trigger`: authenticated endpoint for external apps to enqueue jobs
   - `agent-worker`: claims jobs (SKIP LOCKED), builds context, starts a typing keepalive loop, calls LLM, streams partial replies to Telegram (draft message edits), persists outputs, sends outbound message, stops typing loop
-  - `trigger-webhook`: authenticated endpoint for external apps to enqueue jobs
 
 - **Cron**
   - Runs every minute via pg_cron: first calls `enqueue_due_tasks()` to move due `tasks` into the `jobs` queue, then invokes `agent-worker` via pg_net.
@@ -111,8 +112,8 @@ The worker only calls the LLM when there are due jobs, so this acts as a minimal
 
 #### Core flows
 - **Inbound message**
-  1. Telegram sends update to `telegram-webhook`
-  2. `telegram-webhook` validates secret, upserts session, inserts inbound message, enqueues `job(type="process_message")`, sends typing indicator immediately
+  1. Telegram sends update to `webhook` (`/telegram`)
+  2. `webhook` validates secret, calls `ingest_inbound_text()` (upsert session, insert inbound message, enqueue `job(type="process_message")`)
   3. Webhook kicks `agent-worker` immediately (best-effort, failure swallowed) and returns `200 OK`
   4. `agent-worker` claims the job, starts a typing keepalive loop (refreshes every ~4s, auto-stops after ~2min), composes prompt (SOUL + recent messages + retrieved memory), calls LLM, streams partial replies via Telegram draft edits (partial or block mode), runs tools, finalizes reply, stops typing loop
   5. If the immediate kick failed, cron picks up the job on the next tick (within ~60s)
@@ -124,7 +125,7 @@ The worker only calls the LLM when there are due jobs, so this acts as a minimal
   4. For recurring tasks, the worker recomputes `next_run_at` from the cron expression; for one-shot tasks, the task is disabled
 
 - **External trigger (nice-to-have but aligns with your "avoid heartbeat tokens")**
-  - `trigger-webhook` creates jobs so external systems can enqueue deterministic work without "agent polling"
+  - `webhook` (`/trigger`) creates jobs so external systems can enqueue deterministic work without "agent polling"
 
 
 
@@ -136,13 +137,10 @@ The worker only calls the LLM when there are due jobs, so this acts as a minimal
 1. User sends message via chat provider (e.g. Telegram)
    │
    ▼
-2. Provider calls Supabase Edge Function `telegram-webhook`
+2. Provider calls Supabase Edge Function `webhook` (`/telegram`)
    - verifies `X-Telegram-Bot-Api-Secret-Token`
    - ignores any sender != allowed user id
-   - upserts `sessions`
-   - inserts `messages(role='user')`
-   - enqueues `jobs(type='process_message')`
-   - sends typing indicator (`sendChatAction`)
+   - calls `ingest_inbound_text()` (upserts `sessions`, inserts `messages(role='user')`, enqueues `jobs(type='process_message')`)
    - kicks `agent-worker` immediately (best-effort)
    - returns 200 OK
    │

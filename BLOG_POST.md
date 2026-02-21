@@ -230,10 +230,10 @@ One call searches across any combination of tables. All in Postgres. Better than
 
 ### External Triggers
 
-There's a third Edge Function — `trigger-webhook` — that lets external apps enqueue jobs via a simple authenticated POST:
+There’s a `/trigger` route on the `webhook` Edge Function that lets external apps enqueue jobs via a simple authenticated POST:
 
 ```bash
-curl -X POST https://your-project.supabase.co/functions/v1/trigger-webhook \
+curl -X POST https://your-project.supabase.co/functions/v1/webhook/trigger \
   -H "Authorization: Bearer $SECRET" \
   -d '{"type": "process_message", "payload": {...}}'
 ```
