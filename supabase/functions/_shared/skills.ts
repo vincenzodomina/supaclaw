@@ -693,6 +693,9 @@ async function githubRefExists(
     );
   }
   if (res.status === 404) return false;
+  // GitHub returns 422 for "No commit found for SHA: <ref>" when the ref is not commit-ish.
+  // Treat as "not a ref" so callers can try shorter ref prefixes (branch names vs paths).
+  if (res.status === 422) return false;
   if (res.ok) return true;
   const detail = await fetchTextLimited(res);
   return installError(
