@@ -9,6 +9,7 @@
     "@supabase/functions-js": "jsr:@supabase/functions-js@^2.97.0",
     "ai": "npm:ai@^6.0.90",
     "croner": "npm:croner@^10.0.1",
+    "just-bash": "npm:just-bash@^2.10.2",
     "supabase-edge-runtime": "jsr:@supabase/functions-js/edge-runtime.d.ts"
   }
 }

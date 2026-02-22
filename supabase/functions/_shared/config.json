@@ -9,6 +9,12 @@
   "tools.web_fetch.allowlist": "",
   "tools.web_fetch.denylist": "",
   "tools.web_fetch.dns_check": true,
+  "tools.bash.network.allowlist": "",
+  "tools.bash.network.methods": "GET,HEAD",
+  "tools.bash.network.max_redirects": 10,
+  "tools.bash.network.timeout_ms": 25000,
+  "tools.bash.network.max_response_bytes": 5242880,
+  "tools.bash.network.dangerously_allow_full_internet_access": false,
   "channels.telegram.enabled": true,
   "channels.telegram.show_tool_calls": true
 }
