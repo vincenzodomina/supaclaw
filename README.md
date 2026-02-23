@@ -4,7 +4,7 @@
 
 # SupaClaw 
 
-A basic version of OpenClaw but built *entirely* on Supabase built-in features.
+Built entirely on Supabase built-in features. Use within your Supabase account or fully self-host.
 
 ***Why?***
 
@@ -111,9 +111,11 @@ Built with:
 - [Vercel AI SDK](https://ai-sdk.dev/) - awesome multi provider support
 - [OpenCode](https://github.com/sst/opencode) - inspiration for the tools
 
+> This project is not affiliated with Supabase
+
 ## License
 
-MIT License - see missing [LICENSE](LICENSE) file for details.
+MIT License - see [LICENSE](LICENSE) file for details.
 
 ---
 
