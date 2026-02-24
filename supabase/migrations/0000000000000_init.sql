@@ -193,17 +193,19 @@ begin
 end;
 $$;
 
--- Ingest an inbound text message from any channel provider.
+-- Ingest an inbound message (text or file) from any channel provider.
 -- Creates/updates a session, inserts the inbound message idempotently,
 -- and enqueues a process_message job (deduped by channel + update id).
-create or replace function ingest_inbound_text(
+-- When p_file_id is provided the message type is 'file'; otherwise 'text'.
+create or replace function ingest_inbound(
   p_channel text,
   p_channel_chat_id text,
   p_channel_update_id text,
   p_content text,
   p_channel_message_id text default null,
   p_channel_from_user_id text default null,
-  p_job_max_attempts int default 10
+  p_job_max_attempts int default 10,
+  p_file_id uuid default null
 )
 returns jsonb
 language plpgsql
@@ -213,6 +215,7 @@ declare
   v_chat_id text;
   v_update_id text;
   v_content text;
+  v_type enum_message_type;
   v_message_id text;
   v_from_user_id text;
   v_session_id uuid;
@@ -221,23 +224,29 @@ declare
   v_dedupe_key text;
 begin
   if p_channel is null or btrim(p_channel) = '' then
-    raise exception 'ingest_inbound_text: p_channel is required';
+    raise exception 'ingest_inbound: p_channel is required';
   end if;
   v_channel := btrim(p_channel)::enum_channel_provider;
 
   v_chat_id := nullif(btrim(p_channel_chat_id), '');
   if v_chat_id is null then
-    raise exception 'ingest_inbound_text: p_channel_chat_id is required';
+    raise exception 'ingest_inbound: p_channel_chat_id is required';
   end if;
 
   v_update_id := nullif(btrim(p_channel_update_id), '');
   if v_update_id is null then
-    raise exception 'ingest_inbound_text: p_channel_update_id is required';
+    raise exception 'ingest_inbound: p_channel_update_id is required';
   end if;
 
-  v_content := nullif(btrim(p_content), '');
-  if v_content is null then
-    raise exception 'ingest_inbound_text: p_content is required';
+  if p_file_id is not null then
+    v_type := 'file';
+    v_content := coalesce(nullif(btrim(p_content), ''), '');
+  else
+    v_content := nullif(btrim(p_content), '');
+    if v_content is null then
+      raise exception 'ingest_inbound: p_content is required for text messages';
+    end if;
+    v_type := 'text';
   end if;
 
   v_message_id := nullif(btrim(p_channel_message_id), '');
@@ -252,28 +261,14 @@ begin
   returning id into v_session_id;
 
   insert into messages (
-    session_id,
-    role,
-    type,
-    content,
-    channel,
-    channel_update_id,
-    channel_message_id,
-    channel_chat_id,
-    channel_from_user_id,
-    updated_at
+    session_id, role, type, content, file_id,
+    channel, channel_update_id, channel_message_id,
+    channel_chat_id, channel_from_user_id, updated_at
   )
   values (
-    v_session_id,
-    'user',
-    'text',
-    v_content,
-    v_channel,
-    v_update_id,
-    v_message_id,
-    v_chat_id,
-    v_from_user_id,
-    now()
+    v_session_id, 'user', v_type, v_content, p_file_id,
+    v_channel, v_update_id, v_message_id,
+    v_chat_id, v_from_user_id, now()
   )
   on conflict (channel, channel_update_id) where channel_update_id is not null do nothing
   returning id into v_inbound_id;
@@ -755,8 +750,8 @@ revoke create on schema public from public;
 revoke execute on function public.enqueue_job(text, text, jsonb, timestamptz, int) from public;
 grant execute on function public.enqueue_job(text, text, jsonb, timestamptz, int) to service_role;
 
-revoke execute on function public.ingest_inbound_text(text, text, text, text, text, text, int) from public;
-grant execute on function public.ingest_inbound_text(text, text, text, text, text, text, int) to service_role;
+revoke execute on function public.ingest_inbound(text, text, text, text, text, text, int, uuid) from public;
+grant execute on function public.ingest_inbound(text, text, text, text, text, text, int, uuid) to service_role;
 
 revoke execute on function public.claim_jobs(text, int, int) from public;
 grant execute on function public.claim_jobs(text, int, int) to service_role;

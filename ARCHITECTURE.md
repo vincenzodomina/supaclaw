@@ -99,7 +99,7 @@ The worker only calls the LLM when there are due jobs, so this acts as a minimal
 
 - **Edge Functions (Deno)**
   - `webhook`: single ingress endpoint with routes:
-    - `/telegram`: verifies request, normalizes message, calls `ingest_inbound_text()` (session + message + job enqueue), kicks `agent-worker` immediately (best-effort)
+    - `/telegram`: verifies request, normalizes message (text or file attachment), calls `ingest_inbound()` (session + message + job enqueue), kicks `agent-worker` immediately (best-effort)
     - `/trigger`: authenticated endpoint for external apps to enqueue jobs
   - `agent-worker`: claims jobs (SKIP LOCKED), builds context, starts a typing keepalive loop, calls LLM, streams partial replies to Telegram (draft message edits), persists outputs, sends outbound message, stops typing loop
 
@@ -113,7 +113,7 @@ The worker only calls the LLM when there are due jobs, so this acts as a minimal
 #### Core flows
 - **Inbound message**
   1. Telegram sends update to `webhook` (`/telegram`)
-  2. `webhook` validates secret, calls `ingest_inbound_text()` (upsert session, insert inbound message, enqueue `job(type="process_message")`)
+  2. `webhook` validates secret, calls `ingest_inbound()` (upsert session, insert inbound message, enqueue `job(type="process_message")`)
   3. Webhook kicks `agent-worker` immediately (best-effort, failure swallowed) and returns `200 OK`
   4. `agent-worker` claims the job, starts a typing keepalive loop (refreshes every ~4s, auto-stops after ~2min), composes prompt (SOUL + recent messages + retrieved memory), calls LLM, streams partial replies via Telegram draft edits (partial or block mode), runs tools, finalizes reply, stops typing loop
   5. If the immediate kick failed, cron picks up the job on the next tick (within ~60s)
@@ -140,7 +140,7 @@ The worker only calls the LLM when there are due jobs, so this acts as a minimal
 2. Provider calls Supabase Edge Function `webhook` (`/telegram`)
    - verifies `X-Telegram-Bot-Api-Secret-Token`
    - ignores any sender != allowed user id
-   - calls `ingest_inbound_text()` (upserts `sessions`, inserts `messages(role='user')`, enqueues `jobs(type='process_message')`)
+   - calls `ingest_inbound()` (upserts `sessions`, inserts `messages(role='user')`, enqueues `jobs(type='process_message')`)
    - kicks `agent-worker` immediately (best-effort)
    - returns 200 OK
    │

@@ -164,6 +164,42 @@ async function upsertWorkspaceFileRecord(params: {
   }
 }
 
+/** Upload binary data to storage and create a file DB record. Returns the file row id. */
+export async function uploadInboundFile(params: {
+  objectPath: string;
+  data: Uint8Array;
+  name: string;
+  mimeType?: string;
+}): Promise<{ id: string; bucket: string; objectPath: string }> {
+  const upload = await uploadFileToWorkspace(params.objectPath, params.data, {
+    mimeType: params.mimeType,
+  });
+
+  const content = params.mimeType?.startsWith("text/")
+    ? new TextDecoder().decode(params.data)
+    : "";
+
+  const { data, error } = await supabase
+    .from("files")
+    .upsert(
+      {
+        bucket: upload.bucket,
+        object_path: upload.objectPath,
+        name: params.name,
+        content,
+        size_bytes: params.data.byteLength,
+        mime_type: params.mimeType ?? null,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "bucket,object_path" },
+    )
+    .select("id")
+    .single();
+
+  if (error) throw new Error(`Failed to create file record: ${error.message}`);
+  return { id: data.id, ...upload };
+}
+
 /** Upload content to storage and upsert the corresponding file DB record. */
 export async function writeWorkspaceText(
   objectPath: string,

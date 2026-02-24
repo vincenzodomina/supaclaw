@@ -180,6 +180,24 @@ type DraftStreamParams = {
   blockMinChars?: number
 }
 
+/** Download a file from Telegram servers by its file_id. Channel-specific; callers handle storage. */
+export async function telegramDownloadFile(fileId: string): Promise<{
+  data: Uint8Array
+  path: string
+  size: number
+}> {
+  const result = await telegramApi('getFile', { file_id: fileId })
+  const file = result?.result as Record<string, unknown> | undefined
+  const filePath = typeof file?.file_path === 'string' ? file.file_path : ''
+  if (!filePath) throw new Error('Telegram getFile returned no file_path')
+
+  const token = mustGetEnv('TELEGRAM_BOT_TOKEN')
+  const res = await fetch(`https://api.telegram.org/file/bot${token}/${filePath}`)
+  if (!res.ok) throw new Error(`Telegram file download failed (${res.status})`)
+  const data = new Uint8Array(await res.arrayBuffer())
+  return { data, path: filePath, size: data.byteLength }
+}
+
 export function createTelegramDraftStream(params: DraftStreamParams) {
   const chatId = params.chatId
   const mode = params.mode ?? TELEGRAM_STREAM_PARAMS.mode

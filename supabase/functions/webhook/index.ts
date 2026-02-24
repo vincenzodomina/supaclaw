@@ -9,6 +9,8 @@ import {
   verifySupabaseJwt,
 } from "../_shared/helpers.ts";
 import { logger } from "../_shared/logger.ts";
+import { telegramDownloadFile } from "../_shared/telegram.ts";
+import { uploadInboundFile } from "../_shared/storage.ts";
 
 const supabase = createServiceClient();
 
@@ -55,13 +57,36 @@ type TelegramUpdate = {
   edited_message?: TelegramMessage;
 };
 
+type TelegramDocument = {
+  file_id: string;
+  file_name?: string;
+  mime_type?: string;
+  file_size?: number;
+};
+
+type TelegramPhotoSize = {
+  file_id: string;
+  width: number;
+  height: number;
+  file_size?: number;
+};
+
 type TelegramMessage = {
   message_id: number | string;
   from?: { id: number | string };
   chat: { id: number | string; type: string };
   text?: string;
-  document?: unknown;
-  photo?: unknown;
+  caption?: string;
+  document?: TelegramDocument;
+  photo?: TelegramPhotoSize[];
+};
+
+type InboundAttachment = {
+  fileId: string;
+  fileName: string;
+  mimeType?: string;
+  size?: number;
+  caption?: string;
 };
 
 function isAllowedTelegramUser(message: TelegramMessage): boolean {
@@ -79,6 +104,36 @@ function getTelegramTextContent(message: TelegramMessage): string | undefined {
     return message.text;
   }
   return undefined;
+}
+
+function getTelegramAttachment(
+  message: TelegramMessage,
+): InboundAttachment | undefined {
+  if (message.document) {
+    return {
+      fileId: message.document.file_id,
+      fileName: message.document.file_name ?? "document",
+      mimeType: message.document.mime_type,
+      size: message.document.file_size,
+      caption: message.caption,
+    };
+  }
+  if (message.photo?.length) {
+    const largest = message.photo[message.photo.length - 1];
+    return {
+      fileId: largest.file_id,
+      fileName: "photo.jpg",
+      mimeType: "image/jpeg",
+      size: largest.file_size,
+      caption: message.caption,
+    };
+  }
+  return undefined;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
+  return `${Math.ceil(bytes / 1024)}KB`;
 }
 
 async function kickAgentWorkerNow() {
@@ -209,22 +264,45 @@ async function handleTelegram(req: Request) {
     return textResponse("ok");
   }
 
-  const content = getTelegramTextContent(message);
-  if (!content) return textResponse("ok");
-
   const chatId = String(message.chat.id);
   const updateId = String(update.update_id);
   const messageId = String(message.message_id);
   const fromUserId = message.from?.id == null ? null : String(message.from.id);
 
-  const { error: ingestErr } = await supabase.rpc("ingest_inbound_text", {
+  const attachment = getTelegramAttachment(message);
+  let content = getTelegramTextContent(message);
+  let fileId: string | null = null;
+
+  if (attachment) {
+    const downloaded = await telegramDownloadFile(attachment.fileId);
+    const safeName = attachment.fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const objectPath = `uploads/${updateId}_${safeName}`;
+    const file = await uploadInboundFile({
+      objectPath,
+      data: downloaded.data,
+      name: attachment.fileName,
+      mimeType: attachment.mimeType,
+    });
+    fileId = file.id;
+
+    const meta = [attachment.fileName];
+    if (attachment.mimeType) meta.push(attachment.mimeType);
+    if (downloaded.size) meta.push(formatBytes(downloaded.size));
+    const desc = `[File: ${meta.join(", ")}] → ${objectPath}`;
+    content = attachment.caption ? `${desc}\n${attachment.caption}` : desc;
+  }
+
+  if (!content && !fileId) return textResponse("ok");
+
+  const { error: ingestErr } = await supabase.rpc("ingest_inbound", {
     p_channel: "telegram",
     p_channel_chat_id: chatId,
     p_channel_update_id: updateId,
-    p_content: content,
+    p_content: content ?? "",
     p_channel_message_id: messageId,
     p_channel_from_user_id: fromUserId,
     p_job_max_attempts: 10,
+    p_file_id: fileId,
   });
   if (ingestErr) {
     logger.error("webhook.telegram.ingest_failed", {
@@ -235,7 +313,6 @@ async function handleTelegram(req: Request) {
   }
 
   await kickAgentWorkerNow();
-
   return textResponse("ok");
 }
 
