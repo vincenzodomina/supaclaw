@@ -8,7 +8,7 @@ import {
   sanitizeObjectPath,
   sanitizeObjectPrefix,
   uploadFileToWorkspace,
-  writeWorkspaceText,
+  uploadFile,
 } from "../storage.ts";
 
 const DEFAULT_COMMANDS: CommandName[] = [
@@ -620,7 +620,7 @@ async function exportFromShell(params: {
         skipped.push(w);
         continue;
       }
-      await writeWorkspaceText(w, content, { mimeType: "text/plain; charset=utf-8" });
+      await uploadFile(w, content, { mimeType: "text/plain; charset=utf-8" });
       exported.push(w);
     } catch {
       skipped.push(w);

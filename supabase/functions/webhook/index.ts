@@ -15,7 +15,7 @@ import {
   telegramDownloadFile,
   verifyTelegramSecret,
 } from "../_shared/telegram.ts";
-import { uploadInboundFile } from "../_shared/storage.ts";
+import { uploadFile } from "../_shared/storage.ts";
 import { ChannelUpdate, getChannelAttachment } from "../_shared/channels.ts";
 
 const supabase = createServiceClient();
@@ -195,9 +195,7 @@ async function handleTelegram(req: Request) {
     const downloaded = await telegramDownloadFile(attachment.fileId);
     const safeName = attachment.fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
     const objectPath = `uploads/${updateId}_${safeName}`;
-    const file = await uploadInboundFile({
-      objectPath,
-      data: downloaded.data,
+    const file = await uploadFile(objectPath, downloaded.data, {
       name: attachment.fileName,
       mimeType: attachment.mimeType,
     });

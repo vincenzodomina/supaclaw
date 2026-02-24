@@ -1,8 +1,7 @@
 import {
   downloadTextFromWorkspace,
   listWorkspaceObjects,
-  uploadFileToWorkspace,
-  writeWorkspaceText,
+  uploadFile,
 } from "./storage.ts";
 
 export type SkillMetadata = {
@@ -1172,7 +1171,7 @@ export async function installSkillFromContent(params: {
   }
 
   try {
-    const written = await writeWorkspaceText(dest, content, {
+    const written = await uploadFile(dest, content, {
       mimeType: "text/markdown; charset=utf-8",
     });
     invalidateSkillsCache();
@@ -1382,12 +1381,10 @@ export async function installSkillFromUrl(params: {
         const mimeType = rel.toLowerCase().endsWith(".md")
           ? "text/markdown; charset=utf-8"
           : "text/plain; charset=utf-8";
-        const written = await writeWorkspaceText(out, decoded, { mimeType });
+        const written = await uploadFile(out, decoded, { mimeType });
         written_paths.push(written.objectPath);
       } else {
-        const uploaded = await uploadFileToWorkspace(out, downloaded.value, {
-          defaultMimeType: "application/octet-stream",
-        });
+        const uploaded = await uploadFile(out, downloaded.value);
         written_paths.push(uploaded.objectPath);
       }
     } catch (e) {

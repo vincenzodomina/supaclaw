@@ -133,62 +133,40 @@ export async function listWorkspaceObjects(
   return { bucket, prefix, objects: data ?? [] };
 }
 
-async function upsertWorkspaceFileRecord(params: {
-  bucket: string;
-  objectPath: string;
-  content: string;
-  mimeType?: string;
-}) {
-  const name = params.objectPath.split("/").filter(Boolean).pop() ??
-    params.objectPath;
-  const sizeBytes = new TextEncoder().encode(params.content).byteLength;
-
-  const row: Record<string, unknown> = {
-    bucket: params.bucket,
-    object_path: params.objectPath,
-    name,
-    content: params.content,
-    size_bytes: sizeBytes,
-    updated_at: new Date().toISOString(),
-  };
-  if (params.mimeType !== undefined) {
-    row.mime_type = params.mimeType;
-  }
-
-  const { error } = await supabase
-    .from("files")
-    .upsert(row, { onConflict: "bucket,object_path" });
-
-  if (error) {
-    throw new Error(`Failed to upsert file record: ${error.message}`);
-  }
-}
-
-/** Upload binary data to storage and create a file DB record. Returns the file row id. */
-export async function uploadInboundFile(params: {
-  objectPath: string;
-  data: Uint8Array;
-  name: string;
-  mimeType?: string;
-}): Promise<{ id: string; bucket: string; objectPath: string }> {
-  const upload = await uploadFileToWorkspace(params.objectPath, params.data, {
-    mimeType: params.mimeType,
+/** Upload string or binary content to storage and upsert a file DB record. */
+export async function uploadFile(
+  objectPath: string,
+  content: string | Uint8Array,
+  options?: { mimeType?: string; name?: string },
+): Promise<{ id: string; bucket: string; objectPath: string }> {
+  const isText = typeof content === "string";
+  const defaultMime = isText ? "text/plain; charset=utf-8" : undefined;
+  const upload = await uploadFileToWorkspace(objectPath, content, {
+    mimeType: options?.mimeType,
+    defaultMimeType: defaultMime,
   });
 
-  const content = params.mimeType?.startsWith("text/")
-    ? new TextDecoder().decode(params.data)
-    : "";
+  const textContent = isText
+    ? content
+    : (options?.mimeType?.startsWith("text/")
+      ? new TextDecoder().decode(content)
+      : "");
+  const sizeBytes = isText
+    ? new TextEncoder().encode(content).byteLength
+    : content.byteLength;
+  const name = options?.name ??
+    upload.objectPath.split("/").filter(Boolean).pop() ?? upload.objectPath;
 
-  const { data, error } = await supabase
+  const { data: row, error } = await supabase
     .from("files")
     .upsert(
       {
         bucket: upload.bucket,
         object_path: upload.objectPath,
-        name: params.name,
-        content,
-        size_bytes: params.data.byteLength,
-        mime_type: params.mimeType ?? null,
+        name,
+        content: textContent,
+        size_bytes: sizeBytes,
+        mime_type: options?.mimeType ?? null,
         updated_at: new Date().toISOString(),
       },
       { onConflict: "bucket,object_path" },
@@ -196,27 +174,6 @@ export async function uploadInboundFile(params: {
     .select("id")
     .single();
 
-  if (error) throw new Error(`Failed to create file record: ${error.message}`);
-  return { id: data.id, ...upload };
-}
-
-/** Upload content to storage and upsert the corresponding file DB record. */
-export async function writeWorkspaceText(
-  objectPath: string,
-  content: string,
-  options?: { mimeType?: string },
-): Promise<{ bucket: string; objectPath: string }> {
-  const upload = await uploadFileToWorkspace(objectPath, content, {
-    mimeType: options?.mimeType,
-    defaultMimeType: "text/plain; charset=utf-8",
-  });
-
-  await upsertWorkspaceFileRecord({
-    bucket: upload.bucket,
-    objectPath: upload.objectPath,
-    content,
-    mimeType: options?.mimeType,
-  });
-
-  return upload;
+  if (error) throw new Error(`Failed to upsert file record: ${error.message}`);
+  return { id: row.id, ...upload };
 }

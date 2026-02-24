@@ -1,5 +1,5 @@
 import { jsonSchema, tool } from "ai";
-import { writeWorkspaceText } from "../storage.ts";
+import { uploadFile } from "../storage.ts";
 
 export const writeFileTool = tool({
   description:
@@ -26,7 +26,7 @@ export const writeFileTool = tool({
     additionalProperties: false,
   }),
   execute: async ({ path, content, mime_type }) => {
-    const result = await writeWorkspaceText(path, content, {
+    const result = await uploadFile(path, content, {
       mimeType: mime_type,
     });
     return { ok: true, path: result.objectPath };

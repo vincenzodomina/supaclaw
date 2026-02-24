@@ -1,7 +1,7 @@
 import { jsonSchema, tool } from "ai";
 import {
   downloadTextFromWorkspace,
-  writeWorkspaceText,
+  uploadFile,
 } from "../storage.ts";
 
 export const editFileTool = tool({
@@ -69,7 +69,7 @@ export const editFileTool = tool({
       }
     }
 
-    const result = await writeWorkspaceText(path, next);
+    const result = await uploadFile(path, next);
     return { ok: true, path: result.objectPath, replacements };
   },
 });
