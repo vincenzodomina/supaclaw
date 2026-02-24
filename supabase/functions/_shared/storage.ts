@@ -80,33 +80,6 @@ export async function downloadTextFromWorkspace(
   return await data.text();
 }
 
-export async function uploadFileToWorkspace(
-  objectPath: string,
-  content: string | Uint8Array,
-  options?: { mimeType?: string; defaultMimeType?: string },
-): Promise<{ bucket: string; objectPath: string }> {
-  const bucket = getWorkspaceBucketName();
-  const safePath = sanitizeObjectPath(objectPath);
-  const part = typeof content === "string" ? content : content.buffer.slice(
-    content.byteOffset,
-    content.byteOffset + content.byteLength,
-  ) as ArrayBuffer;
-  const body = new Blob([part], {
-    type: options?.mimeType ?? options?.defaultMimeType ??
-      "application/octet-stream",
-  });
-
-  const { error } = await supabase.storage.from(bucket).upload(safePath, body, {
-    upsert: true,
-    contentType: options?.mimeType,
-  });
-  if (error) {
-    throw new Error(`Storage upload failed: ${error.message}`);
-  }
-
-  return { bucket, objectPath: safePath };
-}
-
 export async function listWorkspaceObjects(
   objectPathPrefix = "",
   options?: { limit?: number; offset?: number },
@@ -143,12 +116,22 @@ export async function uploadFile(
   content: string | Uint8Array,
   options?: { mimeType?: string; name?: string },
 ): Promise<{ id: string; bucket: string; objectPath: string }> {
+  const bucket = getWorkspaceBucketName();
+  const safePath = sanitizeObjectPath(objectPath);
   const isText = typeof content === "string";
-  const defaultMime = isText ? "text/plain; charset=utf-8" : undefined;
-  const upload = await uploadFileToWorkspace(objectPath, content, {
-    mimeType: options?.mimeType,
-    defaultMimeType: defaultMime,
-  });
+  const mime = options?.mimeType ??
+    (isText ? "text/plain; charset=utf-8" : "application/octet-stream");
+  const part = isText ? content : content.buffer.slice(
+    content.byteOffset,
+    content.byteOffset + content.byteLength,
+  ) as ArrayBuffer;
+
+  const { error: uploadErr } = await supabase.storage.from(bucket).upload(
+    safePath,
+    new Blob([part], { type: mime }),
+    { upsert: true, contentType: options?.mimeType },
+  );
+  if (uploadErr) throw new Error(`Storage upload failed: ${uploadErr.message}`);
 
   const textContent = isText
     ? content
@@ -159,14 +142,14 @@ export async function uploadFile(
     ? new TextEncoder().encode(content).byteLength
     : content.byteLength;
   const name = options?.name ??
-    upload.objectPath.split("/").filter(Boolean).pop() ?? upload.objectPath;
+    safePath.split("/").filter(Boolean).pop() ?? safePath;
 
   const { data: row, error } = await supabase
     .from("files")
     .upsert(
       {
-        bucket: upload.bucket,
-        object_path: upload.objectPath,
+        bucket,
+        object_path: safePath,
         name,
         content: textContent,
         size_bytes: sizeBytes,
@@ -179,5 +162,5 @@ export async function uploadFile(
     .single();
 
   if (error) throw new Error(`Failed to upsert file record: ${error.message}`);
-  return { id: row.id, ...upload };
+  return { id: row.id, bucket, objectPath: safePath };
 }
