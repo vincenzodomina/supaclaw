@@ -7,10 +7,16 @@ import {
   timingSafeEqual,
   type VerifiedJwt,
   verifySupabaseJwt,
+  formatBytes,
 } from "../_shared/helpers.ts";
 import { logger } from "../_shared/logger.ts";
-import { telegramDownloadFile } from "../_shared/telegram.ts";
+import {
+  isAllowedTelegramUser,
+  telegramDownloadFile,
+  verifyTelegramSecret,
+} from "../_shared/telegram.ts";
 import { uploadInboundFile } from "../_shared/storage.ts";
+import { ChannelUpdate, getChannelAttachment } from "../_shared/channels.ts";
 
 const supabase = createServiceClient();
 
@@ -43,97 +49,6 @@ async function authorizeTrigger(req: Request): Promise<AuthContext> {
   }
 
   return { authType: "jwt", claims };
-}
-
-function verifyTelegramSecret(req: Request) {
-  const expected = mustGetEnv("TELEGRAM_WEBHOOK_SECRET");
-  const actual = req.headers.get("x-telegram-bot-api-secret-token") ?? "";
-  return timingSafeEqual(expected, actual);
-}
-
-type TelegramUpdate = {
-  update_id: number | string;
-  message?: TelegramMessage;
-  edited_message?: TelegramMessage;
-};
-
-type TelegramDocument = {
-  file_id: string;
-  file_name?: string;
-  mime_type?: string;
-  file_size?: number;
-};
-
-type TelegramPhotoSize = {
-  file_id: string;
-  width: number;
-  height: number;
-  file_size?: number;
-};
-
-type TelegramMessage = {
-  message_id: number | string;
-  from?: { id: number | string };
-  chat: { id: number | string; type: string };
-  text?: string;
-  caption?: string;
-  document?: TelegramDocument;
-  photo?: TelegramPhotoSize[];
-};
-
-type InboundAttachment = {
-  fileId: string;
-  fileName: string;
-  mimeType?: string;
-  size?: number;
-  caption?: string;
-};
-
-function isAllowedTelegramUser(message: TelegramMessage): boolean {
-  const allowedId = mustGetEnv("TELEGRAM_ALLOWED_USER_ID").trim();
-  if (!allowedId) {
-    throw new Error(
-      "TELEGRAM_ALLOWED_USER_ID must be a non-empty Telegram user id",
-    );
-  }
-  return String(message.from?.id ?? "") === allowedId;
-}
-
-function getTelegramTextContent(message: TelegramMessage): string | undefined {
-  if (typeof message.text === "string" && message.text.trim()) {
-    return message.text;
-  }
-  return undefined;
-}
-
-function getTelegramAttachment(
-  message: TelegramMessage,
-): InboundAttachment | undefined {
-  if (message.document) {
-    return {
-      fileId: message.document.file_id,
-      fileName: message.document.file_name ?? "document",
-      mimeType: message.document.mime_type,
-      size: message.document.file_size,
-      caption: message.caption,
-    };
-  }
-  if (message.photo?.length) {
-    const largest = message.photo[message.photo.length - 1];
-    return {
-      fileId: largest.file_id,
-      fileName: "photo.jpg",
-      mimeType: "image/jpeg",
-      size: largest.file_size,
-      caption: message.caption,
-    };
-  }
-  return undefined;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
-  return `${Math.ceil(bytes / 1024)}KB`;
 }
 
 async function kickAgentWorkerNow() {
@@ -169,15 +84,13 @@ function routeHead(req: Request): "trigger" | "telegram" | null {
   const parts = pathname.split("/").filter(Boolean);
   // Edge runtime can forward either "/webhook/<route>" or
   // "/functions/v1/webhook/<route>" depending on invocation path.
-  const short =
-    parts.length === 2 && parts[0] === "webhook" ? parts[1] : null;
-  const full =
-    parts.length === 4 &&
+  const short = parts.length === 2 && parts[0] === "webhook" ? parts[1] : null;
+  const full = parts.length === 4 &&
       parts[0] === "functions" &&
       parts[1] === "v1" &&
       parts[2] === "webhook"
-      ? parts[3]
-      : null;
+    ? parts[3]
+    : null;
   const head = short ?? full;
   if (head !== "trigger" && head !== "telegram") return null;
   return head;
@@ -233,7 +146,10 @@ async function handleTrigger(req: Request) {
   });
 
   if (error) {
-    logger.error("webhook.trigger.enqueue_failed", { type, error: error.message });
+    logger.error("webhook.trigger.enqueue_failed", {
+      type,
+      error: error.message,
+    });
     return jsonResponse({ ok: false, error: error.message }, { status: 500 });
   }
   logger.info("webhook.trigger.enqueued", { type, jobId: data });
@@ -249,9 +165,9 @@ async function handleTelegram(req: Request) {
     return textResponse("forbidden", { status: 403 });
   }
 
-  let update: TelegramUpdate;
+  let update: ChannelUpdate;
   try {
-    update = (await req.json()) as TelegramUpdate;
+    update = (await req.json()) as ChannelUpdate;
   } catch {
     logger.warn("webhook.telegram.invalid_json");
     return textResponse("invalid json", { status: 400 });
@@ -269,8 +185,10 @@ async function handleTelegram(req: Request) {
   const messageId = String(message.message_id);
   const fromUserId = message.from?.id == null ? null : String(message.from.id);
 
-  const attachment = getTelegramAttachment(message);
-  let content = getTelegramTextContent(message);
+  const attachment = getChannelAttachment(message);
+  let content = typeof message.text === "string" && message.text.trim()
+    ? message.text
+    : undefined;
   let fileId: string | null = null;
 
   if (attachment) {
@@ -323,4 +241,3 @@ Deno.serve(async (req) => {
   logger.warn("webhook.route_not_found", { path: new URL(req.url).pathname });
   return textResponse("not found", { status: 404 });
 });
-

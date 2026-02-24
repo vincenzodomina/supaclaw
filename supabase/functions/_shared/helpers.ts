@@ -142,7 +142,9 @@ export function summarize(
     result = next;
     used++;
   }
-  return result.length > maxTotal ? result.slice(0, maxTotal - 1) + "…" : result;
+  return result.length > maxTotal
+    ? result.slice(0, maxTotal - 1) + "…"
+    : result;
 }
 
 export function jsonResponse(data: unknown, init?: ResponseInit) {
@@ -157,4 +159,34 @@ export function textResponse(text: string, init?: ResponseInit) {
     headers.set("content-type", "text/plain; charset=utf-8");
   }
   return new Response(text, { ...init, headers });
+}
+
+export function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
+  return `${Math.ceil(bytes / 1024)}KB`;
+}
+
+export function sleep(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+export function parseRetryAfterMs(value: string | null): number | null {
+  if (!value) return null;
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+  return Math.floor(seconds * 1000);
+}
+
+export function getBackoffMs(
+  attempt: number,
+  maxBackoffMs = 8000,
+  baseBackoffMs = 500,
+): number {
+  const exponential = Math.min(
+    maxBackoffMs,
+    baseBackoffMs * 2 ** (attempt - 1),
+  );
+  // Add light jitter to avoid synchronized retries.
+  const jitter = Math.floor(Math.random() * 250);
+  return exponential + jitter;
 }
