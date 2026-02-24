@@ -2,7 +2,7 @@ import { jsonSchema, tool } from "ai";
 import TurndownService from "turndown";
 import { getConfigBoolean, getConfigString } from "../helpers.ts";
 import { logger } from "../logger.ts";
-import { uploadFileToWorkspace } from "../storage.ts";
+import { uploadFile } from "../storage.ts";
 
 const MAX_DOWNLOAD_BYTES = 5 * 1024 * 1024; // 5MB
 const MAX_OUTPUT_BYTES = 50 * 1024; // 50KB
@@ -118,7 +118,10 @@ function isIpLiteralHost(host: string): boolean {
   return normalizeIpv6(host).includes(":");
 }
 
-async function resolveHostIps(host: string, cache: Map<string, string[]>): Promise<string[]> {
+async function resolveHostIps(
+  host: string,
+  cache: Map<string, string[]>,
+): Promise<string[]> {
   const cached = cache.get(host);
   if (cached) return cached;
 
@@ -140,7 +143,9 @@ async function resolveHostIps(host: string, cache: Map<string, string[]>): Promi
 }
 
 async function validateTarget(url: URL, guard: Guard): Promise<string | null> {
-  if (url.username || url.password) return "URL must not include username/password";
+  if (url.username || url.password) {
+    return "URL must not include username/password";
+  }
   if (url.protocol !== "https:" && url.protocol !== "http:") {
     return "Only http(s) URLs are supported";
   }
@@ -149,7 +154,9 @@ async function validateTarget(url: URL, guard: Guard): Promise<string | null> {
   if (isPrivateIpv4(url.hostname)) return "Blocked private or local IP address";
   if (isPrivateIpv6(url.hostname)) return "Blocked private or local IP address";
 
-  if (guard.deny.some((p) => matchHost(url.hostname, p))) return "Blocked by denylist";
+  if (guard.deny.some((p) => matchHost(url.hostname, p))) {
+    return "Blocked by denylist";
+  }
 
   const hasAllowlist = guard.allow.length > 0;
   if (hasAllowlist && !guard.allow.some((p) => matchHost(url.hostname, p))) {
@@ -235,7 +242,10 @@ function htmlToTextFast(html: string): string {
   return normalizeWhitespace(decodeHtmlEntities(stripTags(cleaned)));
 }
 
-function exceedsEstimatedHtmlNestingDepth(html: string, maxDepth: number): boolean {
+function exceedsEstimatedHtmlNestingDepth(
+  html: string,
+  maxDepth: number,
+): boolean {
   const voidTags = new Set([
     "area",
     "base",
@@ -273,8 +283,7 @@ function exceedsEstimatedHtmlNestingDepth(html: string, maxDepth: number): boole
     const nameStart = j;
     while (j < len) {
       const c = html.charCodeAt(j);
-      const isNameChar =
-        (c >= 65 && c <= 90) ||
+      const isNameChar = (c >= 65 && c <= 90) ||
         (c >= 97 && c <= 122) ||
         (c >= 48 && c <= 57) ||
         c === 58 ||
@@ -351,7 +360,9 @@ function extFromMime(mime: string): string | null {
   const raw = mime.slice(slash + 1).trim().toLowerCase();
   if (!raw) return null;
   const normalized = raw.split("+").pop() ?? raw;
-  return /^[a-z0-9.-]{1,20}$/.test(normalized) ? normalized.replace(/[^a-z0-9]/g, "") : null;
+  return /^[a-z0-9.-]{1,20}$/.test(normalized)
+    ? normalized.replace(/[^a-z0-9]/g, "")
+    : null;
 }
 
 function storagePath(prefix: string, ext: string): string {
@@ -362,8 +373,9 @@ function markdownToText(markdown: string): string {
   let text = markdown;
   text = text.replace(/!\[[^\]]*]\([^)]+\)/g, "");
   text = text.replace(/\[([^\]]+)]\([^)]+\)/g, "$1");
-  text = text.replace(/```[\s\S]*?```/g, (block) =>
-    block.replace(/```[^\n]*\n?/g, "").replace(/```/g, ""),
+  text = text.replace(
+    /```[\s\S]*?```/g,
+    (block) => block.replace(/```[^\n]*\n?/g, "").replace(/```/g, ""),
   );
   text = text.replace(/`([^`]+)`/g, "$1");
   text = text.replace(/^#{1,6}\s+/gm, "");
@@ -457,7 +469,12 @@ async function readBodyLimited(
 function truncateText(
   text: string,
   options: { maxBytes: number; maxLines: number },
-): { content: string; truncated: boolean; removed: number; unit: "bytes" | "lines" } {
+): {
+  content: string;
+  truncated: boolean;
+  removed: number;
+  unit: "bytes" | "lines";
+} {
   const lines = text.split("\n");
   const enc = new TextEncoder();
   const totalBytes = enc.encode(text).byteLength;
@@ -503,9 +520,13 @@ async function fetchWithRedirects(params: {
     const err = await params.validate(current);
     if (err) throw new Error(`Blocked URL: ${err}`);
 
-    const res = await fetch(current.toString(), { ...params.init, redirect: "manual" });
+    const res = await fetch(current.toString(), {
+      ...params.init,
+      redirect: "manual",
+    });
     if (
-      (res.status === 301 || res.status === 302 || res.status === 303 || res.status === 307 ||
+      (res.status === 301 || res.status === 302 || res.status === 303 ||
+        res.status === 307 ||
         res.status === 308) && res.headers.has("location")
     ) {
       const loc = res.headers.get("location") ?? "";
@@ -575,7 +596,10 @@ export const webFetchTool = tool({
     try {
       parsed = new URL(input);
     } catch {
-      return { error: "Invalid URL: must be fully qualified (e.g. https://example.com)" };
+      return {
+        error:
+          "Invalid URL: must be fully qualified (e.g. https://example.com)",
+      };
     }
 
     const upgraded = parsed.protocol === "http:";
@@ -584,7 +608,8 @@ export const webFetchTool = tool({
       if (parsed.port === "80") parsed.port = "";
     }
 
-    const includeQuery = getConfigBoolean("tools.web_fetch.include_query") === true;
+    const includeQuery =
+      getConfigBoolean("tools.web_fetch.include_query") === true;
     const guard: Guard = {
       allow: parseHostPatterns(getConfigString("tools.web_fetch.allowlist")),
       deny: parseHostPatterns(getConfigString("tools.web_fetch.denylist")),
@@ -609,16 +634,24 @@ export const webFetchTool = tool({
     };
 
     const abort = new AbortController();
-    const timer = setTimeout(() => abort.abort(new Error("Timeout")), timeout * 1000);
+    const timer = setTimeout(
+      () => abort.abort(new Error("Timeout")),
+      timeout * 1000,
+    );
 
     try {
-      const init: RequestInit = { method: "GET", headers, signal: abort.signal };
-      const { response: initial, finalUrl, redirects } = await fetchWithRedirects({
-        url: parsed,
-        init,
-        maxRedirects: MAX_REDIRECTS,
-        validate: (u) => validateTarget(u, guard),
-      });
+      const init: RequestInit = {
+        method: "GET",
+        headers,
+        signal: abort.signal,
+      };
+      const { response: initial, finalUrl, redirects } =
+        await fetchWithRedirects({
+          url: parsed,
+          init,
+          maxRedirects: MAX_REDIRECTS,
+          validate: (u) => validateTarget(u, guard),
+        });
 
       const response = initial;
 
@@ -635,18 +668,20 @@ export const webFetchTool = tool({
       const contentType = response.headers.get("content-type") ?? "";
       const mime = (contentType.split(";")[0] ?? "").trim().toLowerCase();
 
-      const isTextLike =
-        mime.startsWith("text/") ||
+      const isTextLike = mime.startsWith("text/") ||
         mime === "application/json" ||
         mime.endsWith("+json") ||
         mime === "application/xml" ||
         mime.endsWith("+xml");
 
       if (!isTextLike) {
-        const { bytes, byteLength } = await readBodyLimited(response, MAX_DOWNLOAD_BYTES);
+        const { bytes, byteLength } = await readBodyLimited(
+          response,
+          MAX_DOWNLOAD_BYTES,
+        );
         const ext = extFromUrl(finalUrl) ?? extFromMime(mime) ?? "bin";
         const path = storagePath("downloads", ext);
-        const uploaded = await uploadFileToWorkspace(path, bytes, {
+        const uploaded = await uploadFile(path, bytes, {
           mimeType: contentType || "application/octet-stream",
         });
         return {
@@ -662,7 +697,10 @@ export const webFetchTool = tool({
         };
       }
 
-      const { bytes, byteLength } = await readBodyLimited(response, MAX_DOWNLOAD_BYTES);
+      const { bytes, byteLength } = await readBodyLimited(
+        response,
+        MAX_DOWNLOAD_BYTES,
+      );
       const raw = new TextDecoder().decode(bytes);
 
       const isHtml = isHtmlMime(mime) || looksLikeHtml(raw);
@@ -672,7 +710,10 @@ export const webFetchTool = tool({
         if (!isHtml) return raw;
         if (fmt === "html") return raw;
         const ok = raw.length <= MAX_HTML_TURNDOWN_CHARS &&
-          !exceedsEstimatedHtmlNestingDepth(raw, MAX_HTML_ESTIMATED_NESTING_DEPTH);
+          !exceedsEstimatedHtmlNestingDepth(
+            raw,
+            MAX_HTML_ESTIMATED_NESTING_DEPTH,
+          );
         if (!ok) return htmlToTextFast(raw);
 
         const md = htmlToMarkdown(raw, finalUrl);
@@ -694,9 +735,8 @@ export const webFetchTool = tool({
           : fmt === "markdown"
           ? "text/markdown; charset=utf-8"
           : "text/plain; charset=utf-8";
-        const uploaded = await uploadFileToWorkspace(path, fullContent, {
+        const uploaded = await uploadFile(path, fullContent, {
           mimeType,
-          defaultMimeType: "text/plain; charset=utf-8",
         });
         saved_path = uploaded.objectPath;
       }
@@ -729,10 +769,12 @@ export const webFetchTool = tool({
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       logger.warn("tool.web_fetch.error", { error: e, message: msg });
-      return { url: formatUrl(parsed, includeQuery), error: `web_fetch error: ${msg}` };
+      return {
+        url: formatUrl(parsed, includeQuery),
+        error: `web_fetch error: ${msg}`,
+      };
     } finally {
       clearTimeout(timer);
     }
   },
 });
-

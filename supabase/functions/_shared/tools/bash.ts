@@ -7,7 +7,6 @@ import {
   listWorkspaceObjects,
   sanitizeObjectPath,
   sanitizeObjectPrefix,
-  uploadFileToWorkspace,
   uploadFile,
 } from "../storage.ts";
 
@@ -806,7 +805,7 @@ export function createBashTool(sessionId: string) {
         if (truncated.truncated && byteLength(full) <= MAX_OUTPUT_SAVE_BYTES) {
           const path = `${TOOL_OUTPUT_PREFIX}/${crypto.randomUUID()}.log`;
           try {
-            const uploaded = await uploadFileToWorkspace(path, full, {
+            const uploaded = await uploadFile(path, full, {
               mimeType: "text/plain; charset=utf-8",
             });
             saved_path = uploaded.objectPath;

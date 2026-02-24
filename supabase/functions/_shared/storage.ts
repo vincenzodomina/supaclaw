@@ -37,7 +37,9 @@ function isStorageNotFound(error: unknown): boolean {
   const err = error as Record<string, unknown>;
   const statusCode = err.statusCode;
   const status = err.status;
-  const message = typeof err.message === "string" ? err.message.toLowerCase() : "";
+  const message = typeof err.message === "string"
+    ? err.message.toLowerCase()
+    : "";
   return statusCode === 404 || status === 404 || message.includes("not found");
 }
 
@@ -53,7 +55,10 @@ export async function downloadTextFromWorkspace(
   if (error) {
     if (isStorageNotFound(error)) {
       // Agent/profile files are optional; callers should treat missing files as absent context.
-      logger.debug("storage.download.not_found", { bucket, objectPath: safePath });
+      logger.debug("storage.download.not_found", {
+        bucket,
+        objectPath: safePath,
+      });
       return null;
     }
     if (options?.optional) {
@@ -82,14 +87,13 @@ export async function uploadFileToWorkspace(
 ): Promise<{ bucket: string; objectPath: string }> {
   const bucket = getWorkspaceBucketName();
   const safePath = sanitizeObjectPath(objectPath);
-  const part = typeof content === "string"
-    ? content
-    : content.buffer.slice(
-      content.byteOffset,
-      content.byteOffset + content.byteLength,
-    ) as ArrayBuffer;
+  const part = typeof content === "string" ? content : content.buffer.slice(
+    content.byteOffset,
+    content.byteOffset + content.byteLength,
+  ) as ArrayBuffer;
   const body = new Blob([part], {
-    type: options?.mimeType ?? options?.defaultMimeType ?? "application/octet-stream",
+    type: options?.mimeType ?? options?.defaultMimeType ??
+      "application/octet-stream",
   });
 
   const { error } = await supabase.storage.from(bucket).upload(safePath, body, {
