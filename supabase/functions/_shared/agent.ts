@@ -79,7 +79,7 @@ export async function runAgent({
   sessionId,
   provider,
   model,
-  maxSteps = getConfigNumber("agent.max_steps") ?? 5,
+  maxSteps = getConfigNumber("agent.max_steps") ?? 25,
   onToolEvent,
   onTextDelta,
 }: {
@@ -139,7 +139,13 @@ export async function runAgent({
       }
     }
 
-    logger.debug("llm.runAgent", { textLength: text.length });
+    const steps = await result.steps;
+    const finishReason = steps.at(-1)?.finishReason;
+    logger.debug("llm.runAgent", {
+      textLength: text.length,
+      steps: steps.length,
+      finishReason,
+    });
     return text.trim();
   } catch (err) {
     throw err;
