@@ -8,6 +8,7 @@ import { createAllTools } from "./tools/index.ts";
 import { getConfigNumber, getConfigString } from "./helpers.ts";
 import { logger } from "./logger.ts";
 import { uploadFile } from "./storage.ts";
+import { createServiceClient } from "./supabase.ts";
 
 export type LLMProvider = "openai" | "anthropic" | "google" | "bedrock";
 
@@ -73,16 +74,30 @@ function resolveProviderModel(provider: LLMProvider, model?: string) {
 }
 
 export async function runAgent({
-  sessionId,
+  channel,
+  channelChatId,
+  userMessage,
+  inboundId: existingInboundId,
   provider,
   model,
   maxSteps = getConfigNumber("agent.max_steps") ?? 25,
 }: {
-  sessionId: string;
+  channel: string;
+  channelChatId: string;
+  userMessage?: {
+    content: string;
+    role?: "user" | "system";
+    channelUpdateId?: string;
+    channelMessageId?: string;
+    channelFromUserId?: string;
+  };
+  inboundId?: number;
   provider?: LLMProvider;
   model?: string;
   maxSteps?: number;
 }) {
+  const supabase = createServiceClient();
+
   const resolvedProvider = provider ?? getConfigString("llms.agent.provider") ??
     "openai";
   const selectedProvider = isLLMProvider(resolvedProvider)
@@ -91,17 +106,132 @@ export async function runAgent({
   const selectedModel = model ?? getConfigString("llms.agent.model");
   const resolvedModel = selectedModel ?? DEFAULT_MODELS[selectedProvider];
   const startedAt = Date.now();
-
   const providerModel = resolveProviderModel(selectedProvider, selectedModel);
+
+  // 1. Upsert session
+  const { data: session, error: sessErr } = await supabase
+    .from("sessions")
+    .upsert(
+      { channel, channel_chat_id: channelChatId, updated_at: new Date().toISOString() },
+      { onConflict: "channel,channel_chat_id" },
+    )
+    .select("id")
+    .single();
+  if (sessErr || !session) {
+    throw new Error(`Session upsert failed: ${sessErr?.message}`);
+  }
+  const sessionId = session.id as string;
+
+  // 2. Insert user message or use existing
+  let inboundId: number;
+  if (existingInboundId != null) {
+    inboundId = existingInboundId;
+  } else if (userMessage) {
+    const { data: inbound, error: inErr } = await supabase
+      .from("messages")
+      .insert({
+        session_id: sessionId,
+        role: userMessage.role ?? "user",
+        type: "text",
+        content: userMessage.content,
+        channel,
+        channel_update_id: userMessage.channelUpdateId,
+        channel_message_id: userMessage.channelMessageId,
+        channel_chat_id: channelChatId,
+        channel_from_user_id: userMessage.channelFromUserId,
+      })
+      .select("id")
+      .single();
+    if (inErr) throw new Error(`Failed to insert user message: ${inErr.message}`);
+    inboundId = inbound.id as number;
+  } else {
+    throw new Error("Either userMessage or inboundId must be provided");
+  }
+
+  // 3. Insert assistant placeholder
+  const { data: assistantRow, error: saveErr } = await supabase
+    .from("messages")
+    .insert({
+      session_id: sessionId,
+      reply_to_message_id: inboundId,
+      role: "assistant",
+      type: "text",
+      content: "",
+      channel,
+      channel_chat_id: channelChatId,
+      channel_sent_at: null,
+    })
+    .select("id")
+    .single();
+  if (saveErr) {
+    throw new Error(`Failed to persist assistant placeholder: ${saveErr.message}`);
+  }
+
+  // 4. Build context and stream
   const messages = await buildInputMessages({ sessionId });
+  const toolState = new Map<string, { rowId: number; startedAt: number }>();
 
   const result = streamText({
     model: providerModel,
     messages,
     tools: createAllTools(sessionId),
     stopWhen: stepCountIs(maxSteps),
+
+    async onChunk({ chunk }) {
+      if (chunk.type === "tool-call") {
+        const args = chunk.input as Record<string, unknown>;
+        const { data, error } = await supabase.from("messages").insert({
+          session_id: sessionId,
+          reply_to_message_id: inboundId,
+          role: "system",
+          type: "tool-call",
+          content: JSON.stringify(args),
+          tool_name: chunk.toolName,
+          tool_status: "started",
+          channel,
+          channel_update_id: `tool:${inboundId}:${chunk.toolCallId}`,
+          channel_chat_id: channelChatId,
+        }).select("id").single();
+
+        if (error) {
+          logger.warn("tool-call.insert_failed", { error: error.message });
+        } else {
+          toolState.set(chunk.toolCallId, { rowId: data.id, startedAt: Date.now() });
+        }
+      } else if (chunk.type === "tool-result") {
+        const state = toolState.get(chunk.toolCallId);
+        if (state) {
+          await supabase.from("messages").update({
+            tool_status: "succeeded",
+            tool_result: chunk.output ?? null,
+            tool_duration_ms: Date.now() - state.startedAt,
+          }).eq("id", state.rowId);
+        }
+      }
+    },
+
+    async onFinish({ text }) {
+      await supabase.from("messages").update({
+        content: text.trim(),
+        channel_sent_at: new Date().toISOString(),
+      }).eq("id", assistantRow.id);
+    },
+
+    async onError({ error }) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      for (const [, s] of toolState) {
+        await supabase.from("messages")
+          .update({
+            tool_status: "failed",
+            tool_error: errMsg,
+            tool_duration_ms: Date.now() - s.startedAt,
+          })
+          .eq("id", s.rowId).eq("tool_status", "started");
+      }
+    },
   });
 
+  // Trace writing (fire-and-forget)
   Promise.resolve(result.text).then(async (text) => {
     const steps = await result.steps;
     const lastStep = steps.at(-1);

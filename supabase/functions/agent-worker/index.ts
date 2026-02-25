@@ -80,7 +80,6 @@ async function processProcessMessage(job: JobRow) {
     throw new Error("Invalid process_message payload");
   }
 
-  // Fetch the inbound message content
   const { data: inbound, error: iErr } = await supabase
     .from("messages")
     .select("id, content, created_at, channel")
@@ -90,7 +89,6 @@ async function processProcessMessage(job: JobRow) {
     .maybeSingle();
   if (iErr) throw new Error(`Failed to load inbound message: ${iErr.message}`);
   if (!inbound) {
-    // Nothing to do (could be a duplicate update we ignored)
     logger.info("job.process_message.no_inbound", {
       jobId: job.id,
       sessionId,
@@ -99,9 +97,7 @@ async function processProcessMessage(job: JobRow) {
     return;
   }
 
-  // Idempotency + retry-safe delivery:
-  // - If an assistant row already exists and was delivered, do nothing.
-  // - If it exists but wasn't delivered yet, deliver now and mark sent.
+  // Idempotency: check for existing assistant replies
   const { data: existingReplies, error: rErr } = await supabase
     .from("messages")
     .select("id, content, channel_chat_id, channel_sent_at")
@@ -132,11 +128,10 @@ async function processProcessMessage(job: JobRow) {
       });
       textToDeliver = await runAgentHandler({
         jobId: job.id,
-        sessionId,
-        inboundId: inbound.id,
-        inboundContent: inbound.content,
-        telegramChatId,
         channel: inbound.channel,
+        channelChatId: telegramChatId,
+        inboundId: inbound.id,
+        telegramChatId,
       });
       const { error: repairErr } = await supabase
         .from("messages")
@@ -159,7 +154,6 @@ async function processProcessMessage(job: JobRow) {
       .update({ channel_sent_at: new Date().toISOString() })
       .eq("id", existingReply.id);
     if (deliveredErr) {
-      // Warn-only: message was already sent; throwing would cause a retry and duplicate delivery.
       logger.warn("job.process_message.mark_delivered_failed", {
         jobId: job.id,
         replyId: existingReply.id,
@@ -173,80 +167,40 @@ async function processProcessMessage(job: JobRow) {
     return;
   }
 
-  // Persist assistant placeholder before delivery; retries can repair/resend this row.
-  const { data: savedReply, error: saveErr } = await supabase
-    .from("messages")
-    .insert({
-      session_id: sessionId,
-      reply_to_message_id: inbound.id,
-      role: "assistant",
-      type: "text",
-      content: "",
-      channel: inbound.channel,
-      channel_chat_id: telegramChatId,
-      channel_sent_at: null,
-    })
-    .select("id")
-    .single();
-  if (saveErr) {
-    throw new Error(`Failed to persist assistant message: ${saveErr.message}`);
-  }
-
+  // Happy path: run agent (handles placeholder + persistence) and stream to Telegram
   const reply = await runAgentHandler({
     jobId: job.id,
-    sessionId,
-    inboundId: inbound.id,
-    inboundContent: inbound.content,
-    telegramChatId,
     channel: inbound.channel,
+    channelChatId: telegramChatId,
+    inboundId: inbound.id,
+    telegramChatId,
     streamMode: MESSAGE_STREAM_MODE,
   });
 
-  const { error: contentErr } = await supabase
-    .from("messages")
-    .update({ content: reply })
-    .eq("id", savedReply.id);
-  if (contentErr) {
-    // Warn-only: reply is already delivered; retrying would likely duplicate delivery.
-    logger.warn("job.process_message.update_content_failed", {
-      jobId: job.id,
-      replyId: savedReply.id,
-      error: contentErr,
-    });
-  }
-
-  const { error: deliveredErr } = await supabase
-    .from("messages")
-    .update({ channel_sent_at: new Date().toISOString() })
-    .eq("id", savedReply.id);
-  if (deliveredErr) {
-    // Warn-only: message was already sent; throwing would cause a retry and duplicate delivery.
-    logger.warn("job.process_message.mark_delivered_failed", {
-      jobId: job.id,
-      replyId: savedReply.id,
-      error: deliveredErr,
-    });
-  }
   logger.info("job.process_message.done", {
     jobId: job.id,
-    replyMessageId: savedReply.id,
+    replyLength: reply.length,
   });
 }
 
 async function runAgentHandler(params: {
   jobId: number;
-  sessionId: string;
-  inboundId: number;
-  inboundContent: string;
-  telegramChatId: string;
   channel: string;
+  channelChatId: string;
+  inboundId?: number;
+  userMessage?: {
+    content: string;
+    role?: "user" | "system";
+    channelUpdateId?: string;
+  };
+  telegramChatId: string;
   streamMode?: TelegramStreamMode;
 }) {
   const showToolCalls =
     getConfigBoolean("channels.telegram.show_tool_calls") === true;
-  const toolState = new Map<
+  const tgToolState = new Map<
     string,
-    { rowId: number; tgMsgId?: string; toolName: string; args: Record<string, unknown>; startedAt: number }
+    { tgMsgId: string; toolName: string; args: Record<string, unknown> }
   >();
 
   const draft = params.streamMode
@@ -273,78 +227,43 @@ async function runAgentHandler(params: {
 
   let rawReply: string;
   try {
-    const result = await runAgent({ sessionId: params.sessionId });
+    const result = await runAgent({
+      channel: params.channel,
+      channelChatId: params.channelChatId,
+      inboundId: params.inboundId,
+      userMessage: params.userMessage,
+    });
     let fullText = "";
 
     for await (const part of result.fullStream) {
       if (part.type === "text-delta") {
         fullText += part.text;
         if (draft) await draft.update(fullText);
-      } else if (part.type === "tool-call") {
+      } else if (part.type === "tool-call" && showToolCalls) {
         const args = part.input as Record<string, unknown>;
-        const { data, error } = await supabase.from("messages").insert({
-          session_id: params.sessionId,
-          reply_to_message_id: params.inboundId,
-          role: "system",
-          type: "tool-call",
-          content: JSON.stringify(args),
-          tool_name: part.toolName,
-          tool_status: "started",
-          channel: "telegram",
-          channel_update_id: `tool:${params.inboundId}:${part.toolCallId}`,
-          channel_chat_id: params.telegramChatId,
-        }).select("id").single();
-
-        if (error) {
-          logger.warn("tool-call.insert_failed", { error: error.message });
-        } else {
-          let tgMsgId: string | undefined;
-          if (showToolCalls) {
-            try {
-              const startText = toolDisplay(part.toolName, args, null) ?? summarize(args);
-              tgMsgId = await telegramSendMessage({
-                chatId: params.telegramChatId,
-                text: `⚙️ ${part.toolName} ${startText}`,
-              });
-              if (tgMsgId) {
-                await supabase.from("messages")
-                  .update({
-                    channel_message_id: tgMsgId,
-                    channel_sent_at: new Date().toISOString(),
-                  })
-                  .eq("id", data.id);
-              }
-            } catch (e) {
-              logger.warn("tool-call.telegram_send_failed", { error: e });
-            }
-          }
-          toolState.set(part.toolCallId, {
-            rowId: data.id,
-            toolName: part.toolName,
-            args,
-            startedAt: Date.now(),
-            tgMsgId,
+        try {
+          const startText = toolDisplay(part.toolName, args, null) ?? summarize(args);
+          const tgMsgId = await telegramSendMessage({
+            chatId: params.telegramChatId,
+            text: `⚙️ ${part.toolName} ${startText}`,
           });
-        }
-      } else if (part.type === "tool-result") {
-        const state = toolState.get(part.toolCallId);
-        if (state) {
-          await supabase.from("messages").update({
-            tool_status: "succeeded",
-            tool_result: part.output ?? null,
-            tool_duration_ms: Date.now() - state.startedAt,
-          }).eq("id", state.rowId);
-
-          if (showToolCalls && state.tgMsgId) {
-            const doneText = toolDisplay(state.toolName, state.args, part.output) ?? summarize(part.output);
-            await telegramEditMessageText({
-              chatId: params.telegramChatId,
-              messageId: state.tgMsgId,
-              text: `✅ ${state.toolName} ${doneText}`,
-            }).catch((e: unknown) =>
-              logger.warn("tool-call.telegram_edit_failed", { error: e })
-            );
+          if (tgMsgId) {
+            tgToolState.set(part.toolCallId, { tgMsgId, toolName: part.toolName, args });
           }
+        } catch (e) {
+          logger.warn("tool-call.telegram_send_failed", { error: e });
+        }
+      } else if (part.type === "tool-result" && showToolCalls) {
+        const state = tgToolState.get(part.toolCallId);
+        if (state?.tgMsgId) {
+          const doneText = toolDisplay(state.toolName, state.args, part.output) ?? summarize(part.output);
+          await telegramEditMessageText({
+            chatId: params.telegramChatId,
+            messageId: state.tgMsgId,
+            text: `✅ ${state.toolName} ${doneText}`,
+          }).catch((e: unknown) =>
+            logger.warn("tool-call.telegram_edit_failed", { error: e })
+          );
         }
       }
     }
@@ -353,15 +272,8 @@ async function runAgentHandler(params: {
   } catch (err) {
     if (draft) await draft.clearDraft();
     const errMsg = err instanceof Error ? err.message : String(err);
-    for (const [, s] of toolState) {
-      await supabase.from("messages")
-        .update({
-          tool_status: "failed",
-          tool_error: errMsg,
-          tool_duration_ms: Date.now() - s.startedAt,
-        })
-        .eq("id", s.rowId).eq("tool_status", "started");
-      if (showToolCalls && s.tgMsgId) {
+    if (showToolCalls) {
+      for (const [, s] of tgToolState) {
         telegramEditMessageText({
           chatId: params.telegramChatId,
           messageId: s.tgMsgId,
@@ -378,7 +290,6 @@ async function runAgentHandler(params: {
   if (!reply) {
     logger.warn("job.process_message.reply_empty", {
       jobId: params.jobId,
-      inboundId: params.inboundId,
     });
     if (draft) await draft.finalize(FALLBACK_REPLY);
     return FALLBACK_REPLY;
@@ -416,88 +327,28 @@ async function processRunTask(job: JobRow) {
   }
 
   const chatId = session.channel_chat_id;
-  const role = taskType === "agent_turn" ? "user" : "system";
+  const role = taskType === "agent_turn" ? "user" as const : "system" as const;
   const content = taskType === "reminder" ? `Reminder: ${prompt}` : prompt;
 
-  const { data: msg, error: msgErr } = await supabase
-    .from("messages")
-    .insert({
-      session_id: sessionId,
-      role,
-      type: "text",
-      content,
-      channel: session.channel,
-      channel_update_id: `task:${taskId}:${Date.now()}`,
-      channel_chat_id: chatId,
-    })
-    .select("id")
-    .single();
-  if (msgErr) {
-    throw new Error(`Failed to insert task message: ${msgErr.message}`);
-  }
-
-  const { data: saved, error: saveErr } = await supabase
-    .from("messages")
-    .insert({
-      session_id: sessionId,
-      reply_to_message_id: msg.id,
-      role: "assistant",
-      type: "text",
-      content: "",
-      channel: session.channel,
-      channel_chat_id: chatId,
-      channel_sent_at: null,
-    })
-    .select("id")
-    .single();
-  if (saveErr) throw new Error(`Failed to persist reply: ${saveErr.message}`);
-
-  const reply = await runAgentHandler({
+  await runAgentHandler({
     jobId: job.id,
-    sessionId,
-    inboundId: msg.id,
-    inboundContent: content,
-    telegramChatId: chatId,
     channel: session.channel,
+    channelChatId: chatId,
+    userMessage: {
+      content,
+      role,
+      channelUpdateId: `task:${taskId}:${Date.now()}`,
+    },
+    telegramChatId: chatId,
     streamMode: MESSAGE_STREAM_MODE,
   });
 
-  const { error: contentErr } = await supabase
-    .from("messages")
-    .update({ content: reply })
-    .eq("id", saved.id);
-  if (contentErr) {
-    logger.warn("job.run_task.update_content_failed", {
-      jobId: job.id,
-      replyId: saved.id,
-      error: contentErr,
-    });
-  }
-
-  const { error: deliveredErr } = await supabase
-    .from("messages")
-    .update({ channel_sent_at: new Date().toISOString() })
-    .eq("id", saved.id);
-  if (deliveredErr) {
-    logger.warn("job.run_task.mark_delivered_failed", {
-      jobId: job.id,
-      replyId: saved.id,
-      error: deliveredErr,
-    });
-  }
-
   await updateTaskAfterRun(taskId);
 
-  logger.info("job.run_task.done", {
-    jobId: job.id,
-    taskId,
-    replyId: saved.id,
-  });
+  logger.info("job.run_task.done", { jobId: job.id, taskId });
 }
 
 function processTrigger(job: JobRow) {
-  // Trigger jobs are intentionally accepted as no-op for now.
-  // This keeps the /trigger webhook route usable without creating retry noise.
   void job;
 }
 
