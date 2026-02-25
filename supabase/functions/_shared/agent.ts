@@ -8,6 +8,7 @@ import { buildInputMessages } from "./context.ts";
 import { createAllTools } from "./tools/index.ts";
 import { getConfigNumber, getConfigString } from "./helpers.ts";
 import { logger } from "./logger.ts";
+import { uploadFile } from "./storage.ts";
 
 export type LLMProvider = "openai" | "anthropic" | "google" | "bedrock";
 
@@ -28,13 +29,24 @@ export type ToolStreamEvent =
 const DEFAULT_MODELS: Record<LLMProvider, string> = {
   openai: "gpt-5.2",
   anthropic: "claude-4-5-opus-latest",
-  google: "gemini-2.5-pro",
+  google: "gemini-3-flash",
   bedrock: "us.anthropic.claude-sonnet-4-20250514-v1:0",
 };
 
 function isLLMProvider(value: string): value is LLMProvider {
   return value === "openai" || value === "anthropic" || value === "google" ||
     value === "bedrock";
+}
+
+function writeTrace(sessionId: string, trace: Record<string, unknown>) {
+  if (Deno.env.get("AGENT_TRACE") === "false") return;
+  const ts = new Date().toISOString().replace(/[:.]/g, "-");
+  const suffix = "error" in trace ? "-error" : "";
+  uploadFile(
+    `.sessions/${sessionId}/${ts}${suffix}.json`,
+    JSON.stringify(trace, null, 2),
+    { mimeType: "application/json" },
+  ).catch((err) => logger.warn("agent.trace.upload_failed", { error: err }));
 }
 
 function resolveProviderModel(provider: LLMProvider, model?: string) {
@@ -90,26 +102,23 @@ export async function runAgent({
   onToolEvent?: (event: ToolStreamEvent) => void | Promise<void>;
   onTextDelta?: (delta: string, fullText: string) => void | Promise<void>;
 }): Promise<string> {
-  //const supabase = createServiceClient();
+  const startedAt = Date.now();
+  const resolvedProvider = provider ?? getConfigString("llms.agent.provider") ??
+    "openai";
+  const selectedProvider = isLLMProvider(resolvedProvider)
+    ? resolvedProvider
+    : "openai";
+  const selectedModel = model ?? getConfigString("llms.agent.model");
+  const resolvedModel = selectedModel ?? DEFAULT_MODELS[selectedProvider];
 
   try {
-    const configuredProvider = getConfigString("llms.agent.provider");
-    const resolvedProvider = provider ?? configuredProvider ?? "openai";
-    const selectedProvider = isLLMProvider(resolvedProvider)
-      ? resolvedProvider
-      : "openai";
-    const selectedModel = model ?? getConfigString("llms.agent.model");
     const providerModel = resolveProviderModel(selectedProvider, selectedModel);
-
-    const messages = await buildInputMessages({
-      sessionId,
-    });
+    const messages = await buildInputMessages({ sessionId });
 
     const result = streamText({
       model: providerModel,
       messages,
       tools: createAllTools(sessionId),
-      ...(provider !== "openai" ? { maxOutputTokens: 800 } : {}),
       stopWhen: stepCountIs(maxSteps),
     });
 
@@ -140,14 +149,77 @@ export async function runAgent({
     }
 
     const steps = await result.steps;
-    const finishReason = steps.at(-1)?.finishReason;
+    const lastStep = steps.at(-1);
+    const finishReason = lastStep?.finishReason;
+    const durationMs = Date.now() - startedAt;
+
     logger.debug("llm.runAgent", {
       textLength: text.length,
       steps: steps.length,
       finishReason,
+      durationMs,
     });
+
+    try {
+      const [usage, request, response] = await Promise.all([
+        result.usage,
+        result.request,
+        result.response,
+      ]);
+      const toolSummary: Record<string, number> = {};
+      for (const s of steps) {
+        for (const tc of s.toolCalls) {
+          toolSummary[tc.toolName] = (toolSummary[tc.toolName] ?? 0) + 1;
+        }
+      }
+      writeTrace(sessionId, {
+        timestamp: new Date().toISOString(),
+        sessionId,
+        provider: selectedProvider,
+        model: resolvedModel,
+        durationMs,
+        input: { messages, maxSteps },
+        request: { body: request.body },
+        steps: steps.map((s) => ({
+          text: s.text,
+          toolCalls: s.toolCalls,
+          toolResults: s.toolResults,
+          finishReason: s.finishReason,
+          usage: s.usage,
+          request: { body: s.request.body },
+          response: {
+            id: s.response.id,
+            modelId: s.response.modelId,
+            timestamp: s.response.timestamp,
+            body: s.response.body,
+          },
+        })),
+        output: { text: text.trim(), finishReason },
+        toolSummary,
+        usage,
+        lastCallUsage: lastStep?.usage,
+        response: {
+          id: response.id,
+          modelId: response.modelId,
+          timestamp: response.timestamp,
+        },
+      });
+    } catch (traceErr) {
+      logger.warn("agent.trace.build_failed", { error: traceErr });
+    }
+
     return text.trim();
   } catch (err) {
+    writeTrace(sessionId, {
+      timestamp: new Date().toISOString(),
+      sessionId,
+      provider: selectedProvider,
+      model: resolvedModel,
+      durationMs: Date.now() - startedAt,
+      error: err instanceof Error
+        ? { name: err.name, message: err.message, stack: err.stack }
+        : { message: String(err) },
+    });
     throw err;
   }
 }

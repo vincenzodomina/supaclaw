@@ -1,6 +1,6 @@
 {
-  "agent.max_steps": 30,
-  "agent.latest_messages_count": 20,
+  "agent.max_steps": 100,
+  "agent.latest_messages_count": 100,
   "llms.agent.model": "gpt-5.2",
   "llms.agent.provider": "openai",
   "llms.embedding.model": "gte-small",

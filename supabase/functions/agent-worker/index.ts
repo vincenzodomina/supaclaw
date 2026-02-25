@@ -23,6 +23,7 @@ import {
 } from "../_shared/agent.ts";
 import { embedText } from "../_shared/embeddings.ts";
 import { computeNextRun } from "../_shared/tools/cron.ts";
+import { toolDisplay } from "../_shared/tools/index.ts";
 
 type JobRow = {
   id: number;
@@ -250,7 +251,7 @@ async function runAgentHandler(params: {
   let toolSeq = 0;
   const toolState = new Map<
     string,
-    { rowId: number; tgMsgId?: string; toolName: string; startedAt: number }
+    { rowId: number; tgMsgId?: string; toolName: string; args: Record<string, unknown>; startedAt: number }
   >();
 
   const onToolEvent = async (event: ToolStreamEvent) => {
@@ -277,9 +278,10 @@ async function runAgentHandler(params: {
       let tgMsgId: string | undefined;
       if (showToolCalls) {
         try {
+          const startText = toolDisplay(event.toolName, event.args, null) ?? summarize(event.args);
           tgMsgId = await telegramSendMessage({
             chatId: params.telegramChatId,
-            text: `⚙️ ${event.toolName} ${summarize(event.args)}`,
+            text: `⚙️ ${event.toolName} ${startText}`,
           });
           if (tgMsgId) {
             await supabase.from("messages")
@@ -297,6 +299,7 @@ async function runAgentHandler(params: {
       toolState.set(event.toolCallId, {
         rowId: data.id,
         toolName: event.toolName,
+        args: event.args,
         startedAt: Date.now(),
         tgMsgId,
       });
@@ -311,10 +314,11 @@ async function runAgentHandler(params: {
       }).eq("id", state.rowId);
 
       if (showToolCalls && state.tgMsgId) {
+        const doneText = toolDisplay(event.toolName, state.args, event.result) ?? summarize(event.result);
         await telegramEditMessageText({
           chatId: params.telegramChatId,
           messageId: state.tgMsgId,
-          text: `✅ ${event.toolName} ${summarize(event.result)}`,
+          text: `✅ ${event.toolName} ${doneText}`,
         }).catch((e: unknown) =>
           logger.warn("tool-call.telegram_edit_failed", { error: e })
         );
