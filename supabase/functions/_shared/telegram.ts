@@ -65,6 +65,13 @@ async function telegramApi(
     if (res.ok) return await res.json().catch(() => null) as ApiResult;
 
     const respBody = await res.text().catch(() => "");
+
+    // Markdown parse failure — retry once without parse_mode instead of throwing
+    if (res.status === 400 && body.parse_mode && respBody.includes("can't parse entities")) {
+      const { parse_mode: _, ...rest } = body;
+      return telegramApi(method, rest);
+    }
+
     const retryable = res.status === 429 || res.status >= 500;
     if (!retryable || attempt >= MAX_RETRIES) {
       throw new Error(
@@ -145,7 +152,7 @@ export async function telegramSendMessage(
   if (!chatId) throw new Error("telegramSendMessage requires non-empty chatId");
   if (!text) throw new Error("telegramSendMessage requires non-empty text");
 
-  const data = await telegramApi("sendMessage", { chat_id: chatId, text });
+  const data = await telegramApi("sendMessage", { chat_id: chatId, text, parse_mode: "MarkdownV2" });
   const result = data?.result as { message_id?: number | string } | undefined;
   return result?.message_id?.toString();
 }
@@ -168,6 +175,7 @@ export async function telegramEditMessageText(
       chat_id: chatId,
       message_id: Number(messageId),
       text,
+      parse_mode: "Markdown",
     });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
