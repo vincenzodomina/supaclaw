@@ -17,12 +17,9 @@ import {
   type TelegramStreamMode,
 } from "../_shared/telegram.ts";
 import { logger } from "../_shared/logger.ts";
-import {
-  runAgent,
-  type ToolStreamEvent,
-} from "../_shared/agent.ts";
+import { runAgent } from "../_shared/agent.ts";
 import { embedText } from "../_shared/embeddings.ts";
-import { computeNextRun } from "../_shared/tools/cron.ts";
+import { updateTaskAfterRun } from "../_shared/tasks.ts";
 import { toolDisplay } from "../_shared/tools/index.ts";
 
 type JobRow = {
@@ -245,88 +242,13 @@ async function runAgentHandler(params: {
   channel: string;
   streamMode?: TelegramStreamMode;
 }) {
-  // Tool-call stream handler: persist each tool call as a timeline row + optional Telegram rendering
   const showToolCalls =
     getConfigBoolean("channels.telegram.show_tool_calls") === true;
-  let toolSeq = 0;
   const toolState = new Map<
     string,
     { rowId: number; tgMsgId?: string; toolName: string; args: Record<string, unknown>; startedAt: number }
   >();
 
-  const onToolEvent = async (event: ToolStreamEvent) => {
-    if (event.type === "tool-call-start") {
-      toolSeq++;
-      const { data, error } = await supabase.from("messages").insert({
-        session_id: params.sessionId,
-        reply_to_message_id: params.inboundId,
-        role: "system",
-        type: "tool-call",
-        content: JSON.stringify(event.args),
-        tool_name: event.toolName,
-        tool_status: "started",
-        channel: "telegram",
-        channel_update_id: `tool:${params.inboundId}:${event.toolCallId}`,
-        channel_chat_id: params.telegramChatId,
-      }).select("id").single();
-
-      if (error) {
-        logger.warn("tool-call.insert_failed", { error: error.message });
-        return;
-      }
-
-      let tgMsgId: string | undefined;
-      if (showToolCalls) {
-        try {
-          const startText = toolDisplay(event.toolName, event.args, null) ?? summarize(event.args);
-          tgMsgId = await telegramSendMessage({
-            chatId: params.telegramChatId,
-            text: `⚙️ ${event.toolName} ${startText}`,
-          });
-          if (tgMsgId) {
-            await supabase.from("messages")
-              .update({
-                channel_message_id: tgMsgId,
-                channel_sent_at: new Date().toISOString(),
-              })
-              .eq("id", data.id);
-          }
-        } catch (e) {
-          logger.warn("tool-call.telegram_send_failed", { error: e });
-        }
-      }
-
-      toolState.set(event.toolCallId, {
-        rowId: data.id,
-        toolName: event.toolName,
-        args: event.args,
-        startedAt: Date.now(),
-        tgMsgId,
-      });
-    } else {
-      const state = toolState.get(event.toolCallId);
-      if (!state) return;
-
-      await supabase.from("messages").update({
-        tool_status: "succeeded",
-        tool_result: event.result ?? null,
-        tool_duration_ms: Date.now() - state.startedAt,
-      }).eq("id", state.rowId);
-
-      if (showToolCalls && state.tgMsgId) {
-        const doneText = toolDisplay(event.toolName, state.args, event.result) ?? summarize(event.result);
-        await telegramEditMessageText({
-          chatId: params.telegramChatId,
-          messageId: state.tgMsgId,
-          text: `✅ ${event.toolName} ${doneText}`,
-        }).catch((e: unknown) =>
-          logger.warn("tool-call.telegram_edit_failed", { error: e })
-        );
-      }
-    }
-  };
-
-  let rawReply: string;
   const draft = params.streamMode
     ? createTelegramDraftStream({
       chatId: params.telegramChatId,
@@ -348,18 +270,88 @@ async function runAgentHandler(params: {
     sendTyping();
     typingInterval = setInterval(sendTyping, 4_000);
   }
+
+  let rawReply: string;
   try {
-    rawReply = await runAgent({
-      sessionId: params.sessionId,
-      onToolEvent,
-      onTextDelta: async (_delta, fullText) => {
-        if (!draft) return;
-        await draft.update(fullText);
-      },
-    });
+    const result = await runAgent({ sessionId: params.sessionId });
+    let fullText = "";
+
+    for await (const part of result.fullStream) {
+      if (part.type === "text-delta") {
+        fullText += part.text;
+        if (draft) await draft.update(fullText);
+      } else if (part.type === "tool-call") {
+        const args = part.input as Record<string, unknown>;
+        const { data, error } = await supabase.from("messages").insert({
+          session_id: params.sessionId,
+          reply_to_message_id: params.inboundId,
+          role: "system",
+          type: "tool-call",
+          content: JSON.stringify(args),
+          tool_name: part.toolName,
+          tool_status: "started",
+          channel: "telegram",
+          channel_update_id: `tool:${params.inboundId}:${part.toolCallId}`,
+          channel_chat_id: params.telegramChatId,
+        }).select("id").single();
+
+        if (error) {
+          logger.warn("tool-call.insert_failed", { error: error.message });
+        } else {
+          let tgMsgId: string | undefined;
+          if (showToolCalls) {
+            try {
+              const startText = toolDisplay(part.toolName, args, null) ?? summarize(args);
+              tgMsgId = await telegramSendMessage({
+                chatId: params.telegramChatId,
+                text: `⚙️ ${part.toolName} ${startText}`,
+              });
+              if (tgMsgId) {
+                await supabase.from("messages")
+                  .update({
+                    channel_message_id: tgMsgId,
+                    channel_sent_at: new Date().toISOString(),
+                  })
+                  .eq("id", data.id);
+              }
+            } catch (e) {
+              logger.warn("tool-call.telegram_send_failed", { error: e });
+            }
+          }
+          toolState.set(part.toolCallId, {
+            rowId: data.id,
+            toolName: part.toolName,
+            args,
+            startedAt: Date.now(),
+            tgMsgId,
+          });
+        }
+      } else if (part.type === "tool-result") {
+        const state = toolState.get(part.toolCallId);
+        if (state) {
+          await supabase.from("messages").update({
+            tool_status: "succeeded",
+            tool_result: part.output ?? null,
+            tool_duration_ms: Date.now() - state.startedAt,
+          }).eq("id", state.rowId);
+
+          if (showToolCalls && state.tgMsgId) {
+            const doneText = toolDisplay(state.toolName, state.args, part.output) ?? summarize(part.output);
+            await telegramEditMessageText({
+              chatId: params.telegramChatId,
+              messageId: state.tgMsgId,
+              text: `✅ ${state.toolName} ${doneText}`,
+            }).catch((e: unknown) =>
+              logger.warn("tool-call.telegram_edit_failed", { error: e })
+            );
+          }
+        }
+      }
+    }
+
+    rawReply = fullText.trim();
   } catch (err) {
     if (draft) await draft.clearDraft();
-    // Mark any pending tool calls as failed
     const errMsg = err instanceof Error ? err.message : String(err);
     for (const [, s] of toolState) {
       await supabase.from("messages")
@@ -382,7 +374,7 @@ async function runAgentHandler(params: {
     clearInterval(typingInterval);
   }
 
-  const reply = rawReply.trim();
+  const reply = rawReply;
   if (!reply) {
     logger.warn("job.process_message.reply_empty", {
       jobId: params.jobId,
@@ -397,31 +389,6 @@ async function runAgentHandler(params: {
     replyLength: reply.length,
   });
   return reply;
-}
-
-async function updateTaskAfterRun(taskId: number) {
-  const { data: task, error } = await supabase
-    .from("tasks")
-    .select("schedule_type, cron_expr, timezone, run_count")
-    .eq("id", taskId)
-    .maybeSingle();
-  if (error || !task) return;
-
-  const patch: Record<string, unknown> = {
-    last_run_at: new Date().toISOString(),
-    run_count: task.run_count + 1,
-    last_error: null,
-    updated_at: new Date().toISOString(),
-  };
-
-  if (task.schedule_type === "recurring" && task.cron_expr) {
-    const next = computeNextRun(task.cron_expr, task.timezone ?? "UTC");
-    patch.next_run_at = next?.toISOString() ?? null;
-  } else if (task.schedule_type === "once") {
-    patch.enabled_at = null;
-  }
-
-  await supabase.from("tasks").update(patch).eq("id", taskId);
 }
 
 async function processRunTask(job: JobRow) {
@@ -443,6 +410,10 @@ async function processRunTask(job: JobRow) {
     .maybeSingle();
   if (sessErr) throw new Error(`Failed to load session: ${sessErr.message}`);
   if (!session) throw new Error(`Session not found: ${sessionId}`);
+  if (session.channel !== "telegram") {
+    logger.info("job.run_task.skip_channel", { jobId: job.id, taskId, channel: session.channel });
+    return;
+  }
 
   const chatId = session.channel_chat_id;
   const role = taskType === "agent_turn" ? "user" : "system";
