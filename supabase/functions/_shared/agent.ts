@@ -90,6 +90,7 @@ export async function runAgent({
     channelUpdateId?: string;
     channelMessageId?: string;
     channelFromUserId?: string;
+    fileId?: string;
   };
   inboundId?: number;
   provider?: LLMProvider;
@@ -132,8 +133,9 @@ export async function runAgent({
       .insert({
         session_id: sessionId,
         role: userMessage.role ?? "user",
-        type: "text",
+        type: userMessage.fileId ? "file" : "text",
         content: userMessage.content,
+        file_id: userMessage.fileId ?? null,
         channel,
         channel_update_id: userMessage.channelUpdateId,
         channel_message_id: userMessage.channelMessageId,

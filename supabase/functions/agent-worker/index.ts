@@ -1,26 +1,15 @@
 import { createServiceClient } from "../_shared/supabase.ts";
 import {
-  getConfigBoolean,
   jsonResponse,
   mustGetEnv,
-  summarize,
   textResponse,
   timingSafeEqual,
 } from "../_shared/helpers.ts";
-import {
-  createTelegramDraftStream,
-  TELEGRAM_STREAM_PARAMS,
-  telegramEditMessageText,
-  telegramSendChatAction,
-  telegramSendChunkedMessage,
-  telegramSendMessage,
-  type TelegramStreamMode,
-} from "../_shared/telegram.ts";
+import { TELEGRAM_STREAM_PARAMS } from "../_shared/telegram.ts";
 import { logger } from "../_shared/logger.ts";
-import { runAgent } from "../_shared/agent.ts";
 import { embedText } from "../_shared/embeddings.ts";
 import { updateTaskAfterRun } from "../_shared/tasks.ts";
-import { toolDisplay } from "../_shared/tools/index.ts";
+import { runAgentAndStreamToTelegram } from "../_shared/telegram.ts";
 
 type JobRow = {
   id: number;
@@ -29,9 +18,6 @@ type JobRow = {
 };
 
 const supabase = createServiceClient();
-const FALLBACK_REPLY =
-  "I hit a temporary issue generating a response. Please try again in a moment.";
-const MESSAGE_STREAM_MODE: TelegramStreamMode = TELEGRAM_STREAM_PARAMS.mode;
 
 function isAuthorized(req: Request) {
   const expected = mustGetEnv("WORKER_SECRET");
@@ -70,238 +56,6 @@ async function jobFail(
   if (error) throw new Error(`job_fail failed: ${error.message}`);
 }
 
-async function processProcessMessage(job: JobRow) {
-  logger.info("job.process_message.start", { jobId: job.id });
-  const sessionId = job.payload.session_id as string | undefined;
-  const updateId = job.payload.channel_update_id as string | undefined;
-  const telegramChatId = job.payload.channel_chat_id as string | undefined;
-
-  if (!sessionId || !updateId || !telegramChatId) {
-    throw new Error("Invalid process_message payload");
-  }
-
-  const { data: inbound, error: iErr } = await supabase
-    .from("messages")
-    .select("id, content, created_at, channel")
-    .eq("session_id", sessionId)
-    .eq("channel_update_id", updateId)
-    .eq("role", "user")
-    .maybeSingle();
-  if (iErr) throw new Error(`Failed to load inbound message: ${iErr.message}`);
-  if (!inbound) {
-    logger.info("job.process_message.no_inbound", {
-      jobId: job.id,
-      sessionId,
-      updateId,
-    });
-    return;
-  }
-
-  // Idempotency: check for existing assistant replies
-  const { data: existingReplies, error: rErr } = await supabase
-    .from("messages")
-    .select("id, content, channel_chat_id, channel_sent_at")
-    .eq("reply_to_message_id", inbound.id)
-    .eq("role", "assistant")
-    .eq("type", "text")
-    .order("created_at", { ascending: false })
-    .limit(1);
-  if (rErr) {
-    throw new Error(`Failed to check existing replies: ${rErr.message}`);
-  }
-  const existingReply = existingReplies?.[0] ?? null;
-  if (existingReply) {
-    if (existingReply.channel_sent_at) return;
-    logger.info("job.process_message.redeliver_pending", {
-      jobId: job.id,
-      replyId: existingReply.id,
-    });
-
-    const existingChatId =
-      existingReply?.channel_chat_id?.toString()?.trim() || telegramChatId;
-    let textToDeliver = (existingReply.content ?? "").trim();
-    if (!textToDeliver) {
-      logger.warn("job.process_message.redeliver_empty_content", {
-        jobId: job.id,
-        replyId: existingReply.id,
-        inboundId: inbound.id,
-      });
-      textToDeliver = await runAgentHandler({
-        jobId: job.id,
-        channel: inbound.channel,
-        channelChatId: telegramChatId,
-        inboundId: inbound.id,
-        telegramChatId,
-      });
-      const { error: repairErr } = await supabase
-        .from("messages")
-        .update({ content: textToDeliver })
-        .eq("id", existingReply.id);
-      if (repairErr) {
-        throw new Error(
-          `Failed to repair empty assistant message: ${repairErr.message}`,
-        );
-      }
-    }
-
-    await telegramSendChunkedMessage({
-      chatId: existingChatId,
-      text: textToDeliver,
-    });
-
-    const { error: deliveredErr } = await supabase
-      .from("messages")
-      .update({ channel_sent_at: new Date().toISOString() })
-      .eq("id", existingReply.id);
-    if (deliveredErr) {
-      logger.warn("job.process_message.mark_delivered_failed", {
-        jobId: job.id,
-        replyId: existingReply.id,
-        error: deliveredErr,
-      });
-    }
-    logger.info("job.process_message.redelivered", {
-      jobId: job.id,
-      replyId: existingReply.id,
-    });
-    return;
-  }
-
-  // Happy path: run agent (handles placeholder + persistence) and stream to Telegram
-  const reply = await runAgentHandler({
-    jobId: job.id,
-    channel: inbound.channel,
-    channelChatId: telegramChatId,
-    inboundId: inbound.id,
-    telegramChatId,
-    streamMode: MESSAGE_STREAM_MODE,
-  });
-
-  logger.info("job.process_message.done", {
-    jobId: job.id,
-    replyLength: reply.length,
-  });
-}
-
-async function runAgentHandler(params: {
-  jobId: number;
-  channel: string;
-  channelChatId: string;
-  inboundId?: number;
-  userMessage?: {
-    content: string;
-    role?: "user" | "system";
-    channelUpdateId?: string;
-  };
-  telegramChatId: string;
-  streamMode?: TelegramStreamMode;
-}) {
-  const showToolCalls =
-    getConfigBoolean("channels.telegram.show_tool_calls") === true;
-  const tgToolState = new Map<
-    string,
-    { tgMsgId: string; toolName: string; args: Record<string, unknown> }
-  >();
-
-  const draft = params.streamMode
-    ? createTelegramDraftStream({
-      chatId: params.telegramChatId,
-      mode: params.streamMode,
-      throttleMs: TELEGRAM_STREAM_PARAMS.throttleMs,
-      minInitialChars: TELEGRAM_STREAM_PARAMS.minInitialChars,
-      textLimit: TELEGRAM_STREAM_PARAMS.textLimit,
-      chunkSoftLimit: TELEGRAM_STREAM_PARAMS.chunkSoftLimit,
-      blockMinChars: TELEGRAM_STREAM_PARAMS.blockMinChars,
-    })
-    : null;
-  let typingInterval: ReturnType<typeof setInterval> | undefined;
-  if (draft) {
-    const sendTyping = () =>
-      telegramSendChatAction({
-        chatId: params.telegramChatId,
-        action: "typing",
-      }).catch(() => {});
-    sendTyping();
-    typingInterval = setInterval(sendTyping, 4_000);
-  }
-
-  let rawReply: string;
-  try {
-    const result = await runAgent({
-      channel: params.channel,
-      channelChatId: params.channelChatId,
-      inboundId: params.inboundId,
-      userMessage: params.userMessage,
-    });
-    let fullText = "";
-
-    for await (const part of result.fullStream) {
-      if (part.type === "text-delta") {
-        fullText += part.text;
-        if (draft) await draft.update(fullText);
-      } else if (part.type === "tool-call" && showToolCalls) {
-        const args = part.input as Record<string, unknown>;
-        try {
-          const startText = toolDisplay(part.toolName, args, null) ?? summarize(args);
-          const tgMsgId = await telegramSendMessage({
-            chatId: params.telegramChatId,
-            text: `⚙️ ${part.toolName} ${startText}`,
-          });
-          if (tgMsgId) {
-            tgToolState.set(part.toolCallId, { tgMsgId, toolName: part.toolName, args });
-          }
-        } catch (e) {
-          logger.warn("tool-call.telegram_send_failed", { error: e });
-        }
-      } else if (part.type === "tool-result" && showToolCalls) {
-        const state = tgToolState.get(part.toolCallId);
-        if (state?.tgMsgId) {
-          const doneText = toolDisplay(state.toolName, state.args, part.output) ?? summarize(part.output);
-          await telegramEditMessageText({
-            chatId: params.telegramChatId,
-            messageId: state.tgMsgId,
-            text: `✅ ${state.toolName} ${doneText}`,
-          }).catch((e: unknown) =>
-            logger.warn("tool-call.telegram_edit_failed", { error: e })
-          );
-        }
-      }
-    }
-
-    rawReply = fullText.trim();
-  } catch (err) {
-    if (draft) await draft.clearDraft();
-    const errMsg = err instanceof Error ? err.message : String(err);
-    if (showToolCalls) {
-      for (const [, s] of tgToolState) {
-        telegramEditMessageText({
-          chatId: params.telegramChatId,
-          messageId: s.tgMsgId,
-          text: `❌ ${s.toolName} ${summarize(errMsg)}`,
-        }).catch(() => {});
-      }
-    }
-    throw err;
-  } finally {
-    clearInterval(typingInterval);
-  }
-
-  const reply = rawReply;
-  if (!reply) {
-    logger.warn("job.process_message.reply_empty", {
-      jobId: params.jobId,
-    });
-    if (draft) await draft.finalize(FALLBACK_REPLY);
-    return FALLBACK_REPLY;
-  }
-  if (draft) await draft.finalize(reply);
-  logger.debug("job.process_message.reply_generated", {
-    jobId: params.jobId,
-    replyLength: reply.length,
-  });
-  return reply;
-}
-
 async function processRunTask(job: JobRow) {
   const taskId = job.payload.task_id as number;
   const prompt = job.payload.prompt as string;
@@ -330,8 +84,7 @@ async function processRunTask(job: JobRow) {
   const role = taskType === "agent_turn" ? "user" as const : "system" as const;
   const content = taskType === "reminder" ? `Reminder: ${prompt}` : prompt;
 
-  await runAgentHandler({
-    jobId: job.id,
+  await runAgentAndStreamToTelegram({
     channel: session.channel,
     channelChatId: chatId,
     userMessage: {
@@ -340,7 +93,7 @@ async function processRunTask(job: JobRow) {
       channelUpdateId: `task:${taskId}:${Date.now()}`,
     },
     telegramChatId: chatId,
-    streamMode: MESSAGE_STREAM_MODE,
+    streamMode: TELEGRAM_STREAM_PARAMS.mode,
   });
 
   await updateTaskAfterRun(taskId);
@@ -400,7 +153,6 @@ async function processEmbed(job: JobRow, config: EmbedConfig) {
 }
 
 async function processJob(job: JobRow) {
-  if (job.type === "process_message") return await processProcessMessage(job);
   if (job.type === "run_task") return await processRunTask(job);
   const embedConfig = EMBED_CONFIG[job.type];
   if (embedConfig) return await processEmbed(job, embedConfig);

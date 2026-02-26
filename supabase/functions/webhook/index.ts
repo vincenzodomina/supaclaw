@@ -1,4 +1,3 @@
-import { createServiceClient } from "../_shared/supabase.ts";
 import {
   getBearerToken,
   jsonResponse,
@@ -13,16 +12,21 @@ import { logger } from "../_shared/logger.ts";
 import {
   isAllowedTelegramUser,
   telegramDownloadFile,
+  TELEGRAM_STREAM_PARAMS,
+  telegramSendChunkedMessage,
   verifyTelegramSecret,
 } from "../_shared/telegram.ts";
 import { uploadFile } from "../_shared/storage.ts";
 import { ChannelUpdate, getChannelAttachment } from "../_shared/channels.ts";
+import { runAgentAndStreamToTelegram } from "../_shared/telegram.ts";
+import { createServiceClient } from "../_shared/supabase.ts";
+
+declare const EdgeRuntime: { waitUntil(promise: Promise<unknown>): void };
 
 const supabase = createServiceClient();
 
 const ALLOWED_JOB_TYPES = new Set([
   "trigger",
-  "process_message",
   "embed_memory",
   "embed_message",
   "embed_file",
@@ -49,34 +53,6 @@ async function authorizeTrigger(req: Request): Promise<AuthContext> {
   }
 
   return { authType: "jwt", claims };
-}
-
-async function kickAgentWorkerNow() {
-  const workerSecret = Deno.env.get("WORKER_SECRET")?.trim();
-  if (!workerSecret) return;
-  const baseUrl = (Deno.env.get("SUPABASE_URL") ?? "").trim().replace(
-    /\/+$/,
-    "",
-  );
-  if (!baseUrl) return;
-  const url = `${baseUrl}/functions/v1/agent-worker`;
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 1500);
-  try {
-    await fetch(url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-worker-secret": workerSecret,
-      },
-      body: "{}",
-      signal: ctrl.signal,
-    });
-  } catch {
-    // Best effort: cron remains the durable backstop.
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 function routeHead(req: Request): "trigger" | "telegram" | null {
@@ -189,7 +165,7 @@ async function handleTelegram(req: Request) {
   let content = typeof message.text === "string" && message.text.trim()
     ? message.text
     : undefined;
-  let fileId: string | null = null;
+  let fileId: string | undefined;
 
   if (attachment) {
     const downloaded = await telegramDownloadFile(attachment.fileId);
@@ -210,25 +186,32 @@ async function handleTelegram(req: Request) {
 
   if (!content && !fileId) return textResponse("ok");
 
-  const { error: ingestErr } = await supabase.rpc("ingest_inbound", {
-    p_channel: "telegram",
-    p_channel_chat_id: chatId,
-    p_channel_update_id: updateId,
-    p_content: content ?? "",
-    p_channel_message_id: messageId,
-    p_channel_from_user_id: fromUserId,
-    p_job_max_attempts: 10,
-    p_file_id: fileId,
+  const processing = runAgentAndStreamToTelegram({
+    channel: "telegram",
+    channelChatId: chatId,
+    userMessage: {
+      content: content ?? "",
+      channelUpdateId: updateId,
+      channelMessageId: messageId,
+      channelFromUserId: fromUserId ?? undefined,
+      fileId,
+    },
+    telegramChatId: chatId,
+    streamMode: TELEGRAM_STREAM_PARAMS.mode,
+  }).catch((err) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("Failed to insert user message")) {
+      logger.info("webhook.telegram.duplicate_message", { updateId });
+      return;
+    }
+    logger.error("webhook.telegram.process_failed", { error: msg, updateId });
+    telegramSendChunkedMessage({
+      chatId,
+      text: "I hit a temporary issue generating a response. Please try again in a moment.",
+    }).catch(() => {});
   });
-  if (ingestErr) {
-    logger.error("webhook.telegram.ingest_failed", {
-      error: ingestErr.message,
-      updateId,
-    });
-    return jsonResponse({ error: ingestErr.message }, { status: 500 });
-  }
 
-  await kickAgentWorkerNow();
+  EdgeRuntime.waitUntil(processing);
   return textResponse("ok");
 }
 
