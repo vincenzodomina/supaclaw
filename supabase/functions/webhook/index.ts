@@ -11,6 +11,7 @@ import {
 import { logger } from "../_shared/logger.ts";
 import {
   isAllowedTelegramUser,
+  runAgentAndStreamToTelegram,
   telegramDownloadFile,
   TELEGRAM_STREAM_PARAMS,
   telegramSendChunkedMessage,
@@ -18,7 +19,6 @@ import {
 } from "../_shared/telegram.ts";
 import { uploadFile } from "../_shared/storage.ts";
 import { ChannelUpdate, getChannelAttachment } from "../_shared/channels.ts";
-import { runAgentAndStreamToTelegram } from "../_shared/telegram.ts";
 import { createServiceClient } from "../_shared/supabase.ts";
 
 declare const EdgeRuntime: { waitUntil(promise: Promise<unknown>): void };
