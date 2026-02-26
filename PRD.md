@@ -15,7 +15,15 @@ Because I want an AI agent that:
 - Is **hackable and customizable** — my code, my rules
 - Is based on existing, battle tested, enterprise ready software you can bring to businesses
 
-Imagine an AI agent that you can setup with one command in the cloud in under 10 minutes as the easy path, all your created resources like persona files and skills are 100% portable to other agent frameworks and still you can self-host this as a full solution later for maximum privacy and local-model use.
+And of course the big one:
+
+**Security**:
+
+- No access to any credentials, but agent still can do everything
+- Bash, but as a simulated environment for most use cases, whitelisted for most others and VM -sandbox where really needed
+- No access to destructive actions without audit/revert option (e.g. database delete actions, delete files)
+- Access: Auth, JWT secured endpoints, Row level security
+- Database backups serve as full system snapshot backup (All data , all files)
 
 ---
 

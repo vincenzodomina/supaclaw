@@ -12,23 +12,28 @@ Because why not.
 
 I use Supabase daily. I know it. I trust it. I'm already self-hosting it for production projects. It already ships with every primitive needed. 
 
-- Store and host everything in Supabase, no other Cloud provider or infrastructure needed
-- Minimal Dependencies: Supabase, Vercel AI SDK, your LLM provider, and croner for cron scheduling — thats it
-- Production ready, battle tested & secure tech, not re-inventing the wheel
-- Cloud or self hosting: Fast cloud setup, port to private self hosting later
+And of course the big one:
+
+**Security**:
+
+- No access to any credentials, but agent still can do everything
+- Bash, but as a simulated environment for most use cases, whitelisted for most others and VM -sandbox where really needed
+- No access to destructive actions without audit/revert option (e.g. database delete actions, delete files)
+- Access: Auth, JWT secured endpoints, Row level security
+- Database backups serve as full system snapshot backup (All data , all files)
 
 ## Where SupaClaw is different
 
 SupaClaw is not trying to out-feature OpenClaw. It optimizes for a different goal: 
 
-> Supabase-native operations with minimal moving parts + Supabase goodies out of the box (e.g. Admin Dashboard, API's, SDK's).
+> Supabase-native operations with minimal moving parts + Supabase goodies out of the box (e.g. Admin Dashboard, API's, SDK's). Fast cloud setup on only Supabase (no other Cloud provider or infrastructure needed) or private self hosting later.
 
 - **One control plane:** Database, storage, auth, logs, cron, and edge runtime are all native Supabase primitives that can be managed via the built-in Admin Dashboard.
 - **Durable by design:** Inbound events are persisted and queued first, then processed by workers with retry + idempotency semantics.
 - **SQL-driven scheduling:** Scheduled work is managed by Postgres (`pg_cron`) instead of a custom always-on scheduler process.
 - **Serverless worker loop:** Webhook ingest and agent execution run as edge functions, with cron as a durable backstop.
 - **Data properly stored:** Messages, jobs, and tasks are directly inspectable and debuggable in SQL and Supabase dashboard views.
-- **Lower infra overhead:** No dedicated daemon host, no separate queue broker, no extra orchestration layer required.
+- **Lower infra overhead:** No dedicated daemon host, no separate queue broker, no extra orchestration layer, instead production ready, battle tested & secure tech
 
 # Quickstart
 
