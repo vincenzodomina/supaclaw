@@ -1,9 +1,23 @@
 import { ChannelMessage } from "./channels.ts";
-import { mustGetEnv, timingSafeEqual, sleep, parseRetryAfterMs, getBackoffMs } from "./helpers.ts";
+import {
+  getBackoffMs,
+  getConfigBoolean,
+  mustGetEnv,
+  parseRetryAfterMs,
+  sleep,
+  summarize,
+  timingSafeEqual,
+} from "./helpers.ts";
+import { logger } from "./logger.ts";
+import { toolDisplay } from "./tools/index.ts";
+import { runAgent } from "./agent.ts";
 
 const MAX_RETRIES = 5;
 const BASE_BACKOFF_MS = 500;
 const MAX_BACKOFF_MS = 8000;
+
+const FALLBACK_REPLY =
+  "I hit a temporary issue generating a response. Please try again in a moment.";
 
 type ApiResult = Record<string, unknown> | null;
 
@@ -67,7 +81,10 @@ async function telegramApi(
     const respBody = await res.text().catch(() => "");
 
     // Markdown parse failure — retry once without parse_mode instead of throwing
-    if (res.status === 400 && body.parse_mode && respBody.includes("can't parse entities")) {
+    if (
+      res.status === 400 && body.parse_mode &&
+      respBody.includes("can't parse entities")
+    ) {
       const { parse_mode: _, ...rest } = body;
       return telegramApi(method, rest);
     }
@@ -95,7 +112,9 @@ async function telegramApi(
         // Ignore malformed provider body and fall back to header/backoff.
       }
     }
-    await sleep(retryAfterMs ?? getBackoffMs(attempt, MAX_BACKOFF_MS, BASE_BACKOFF_MS));
+    await sleep(
+      retryAfterMs ?? getBackoffMs(attempt, MAX_BACKOFF_MS, BASE_BACKOFF_MS),
+    );
   }
   throw new Error(`Telegram ${method}: exhausted ${MAX_RETRIES} retries`);
 }
@@ -152,7 +171,11 @@ export async function telegramSendMessage(
   if (!chatId) throw new Error("telegramSendMessage requires non-empty chatId");
   if (!text) throw new Error("telegramSendMessage requires non-empty text");
 
-  const data = await telegramApi("sendMessage", { chat_id: chatId, text, parse_mode: "MarkdownV2" });
+  const data = await telegramApi("sendMessage", {
+    chat_id: chatId,
+    text,
+    parse_mode: "MarkdownV2",
+  });
   const result = data?.result as { message_id?: number | string } | undefined;
   return result?.message_id?.toString();
 }
@@ -401,4 +424,126 @@ export function createTelegramDraftStream(params: DraftStreamParams) {
     finalize,
     clearDraft,
   };
+}
+
+export async function runAgentAndStreamToTelegram(params: {
+  channel: string;
+  channelChatId: string;
+  inboundId?: number;
+  userMessage?: {
+    content: string;
+    role?: "user" | "system";
+    channelUpdateId?: string;
+    channelMessageId?: string;
+    channelFromUserId?: string;
+    fileId?: string;
+  };
+  telegramChatId: string;
+  streamMode?: TelegramStreamMode;
+}): Promise<string> {
+  const showToolCalls =
+    getConfigBoolean("channels.telegram.show_tool_calls") === true;
+  const tgToolState = new Map<
+    string,
+    { tgMsgId: string; toolName: string; args: Record<string, unknown> }
+  >();
+
+  const draft = params.streamMode
+    ? createTelegramDraftStream({
+      chatId: params.telegramChatId,
+      mode: params.streamMode,
+      throttleMs: TELEGRAM_STREAM_PARAMS.throttleMs,
+      minInitialChars: TELEGRAM_STREAM_PARAMS.minInitialChars,
+      textLimit: TELEGRAM_STREAM_PARAMS.textLimit,
+      chunkSoftLimit: TELEGRAM_STREAM_PARAMS.chunkSoftLimit,
+      blockMinChars: TELEGRAM_STREAM_PARAMS.blockMinChars,
+    })
+    : null;
+  let typingInterval: ReturnType<typeof setInterval> | undefined;
+  if (draft) {
+    const sendTyping = () =>
+      telegramSendChatAction({
+        chatId: params.telegramChatId,
+        action: "typing",
+      }).catch(() => {});
+    sendTyping();
+    typingInterval = setInterval(sendTyping, 4_000);
+  }
+
+  let rawReply: string;
+  try {
+    const result = await runAgent({
+      channel: params.channel,
+      channelChatId: params.channelChatId,
+      inboundId: params.inboundId,
+      userMessage: params.userMessage,
+    });
+    let fullText = "";
+
+    for await (const part of result.fullStream) {
+      if (part.type === "text-delta") {
+        fullText += part.text;
+        if (draft) await draft.update(fullText);
+      } else if (part.type === "tool-call" && showToolCalls) {
+        const args = part.input as Record<string, unknown>;
+        try {
+          const startText = toolDisplay(part.toolName, args, null) ??
+            summarize(args);
+          const tgMsgId = await telegramSendMessage({
+            chatId: params.telegramChatId,
+            text: `⚙️ ${part.toolName} ${startText}`,
+          });
+          if (tgMsgId) {
+            tgToolState.set(part.toolCallId, {
+              tgMsgId,
+              toolName: part.toolName,
+              args,
+            });
+          }
+        } catch (e) {
+          logger.warn("tool-call.telegram_send_failed", { error: e });
+        }
+      } else if (part.type === "tool-result" && showToolCalls) {
+        const state = tgToolState.get(part.toolCallId);
+        if (state?.tgMsgId) {
+          const doneText =
+            toolDisplay(state.toolName, state.args, part.output) ??
+              summarize(part.output);
+          await telegramEditMessageText({
+            chatId: params.telegramChatId,
+            messageId: state.tgMsgId,
+            text: `✅ ${state.toolName} ${doneText}`,
+          }).catch((e: unknown) =>
+            logger.warn("tool-call.telegram_edit_failed", { error: e })
+          );
+        }
+      }
+    }
+
+    rawReply = fullText.trim();
+  } catch (err) {
+    if (draft) await draft.clearDraft();
+    const errMsg = err instanceof Error ? err.message : String(err);
+    if (showToolCalls) {
+      for (const [, s] of tgToolState) {
+        telegramEditMessageText({
+          chatId: params.telegramChatId,
+          messageId: s.tgMsgId,
+          text: `❌ ${s.toolName} ${summarize(errMsg)}`,
+        }).catch(() => {});
+      }
+    }
+    throw err;
+  } finally {
+    clearInterval(typingInterval);
+  }
+
+  const reply = rawReply;
+  if (!reply) {
+    logger.warn("telegram-agent.reply_empty");
+    if (draft) await draft.finalize(FALLBACK_REPLY);
+    return FALLBACK_REPLY;
+  }
+  if (draft) await draft.finalize(reply);
+  return reply;
 }

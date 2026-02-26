@@ -1,5 +1,8 @@
 {
   "imports": {
+    "chat": "npm:chat@^4.14.0",
+    "@chat-adapter/slack": "npm:@chat-adapter/slack@latest",
+    "@chat-adapter/state-memory": "npm:@chat-adapter/state-memory@latest",
     "@ai-sdk/amazon-bedrock": "npm:@ai-sdk/amazon-bedrock@^4.0.60",
     "@ai-sdk/anthropic": "npm:@ai-sdk/anthropic@^3.0.45",
     "@ai-sdk/google": "npm:@ai-sdk/google@^3.0.29",

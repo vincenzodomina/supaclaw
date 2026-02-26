@@ -1,0 +1,29 @@
+import { createServiceClient } from "./supabase.ts";
+import { computeNextRun } from "./tools/cron.ts";
+
+const supabase = createServiceClient();
+
+export async function updateTaskAfterRun(taskId: number) {
+  const { data: task, error } = await supabase
+    .from("tasks")
+    .select("schedule_type, cron_expr, timezone, run_count")
+    .eq("id", taskId)
+    .maybeSingle();
+  if (error || !task) return;
+
+  const patch: Record<string, unknown> = {
+    last_run_at: new Date().toISOString(),
+    run_count: task.run_count + 1,
+    last_error: null,
+    updated_at: new Date().toISOString(),
+  };
+
+  if (task.schedule_type === "recurring" && task.cron_expr) {
+    const next = computeNextRun(task.cron_expr, task.timezone ?? "UTC");
+    patch.next_run_at = next?.toISOString() ?? null;
+  } else if (task.schedule_type === "once") {
+    patch.enabled_at = null;
+  }
+
+  await supabase.from("tasks").update(patch).eq("id", taskId);
+}
