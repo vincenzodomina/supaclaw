@@ -1,3 +1,13 @@
+# Docs
+
+Look through the /docs folder to learn details about:
+- Architecture
+- Product Requirements
+- Security
+- Deployment
+- Tests
+- Philosophy and Goals of this Project (Blog Post)
+
 # Tech stack
 
 ## Supabase
