@@ -1,6 +1,6 @@
 # SupaClaw PRD
 
-A cloud-native AI agent for people who don't want to manage infrastructure
+Zero-infra cloud agent - Runs entirely on Supabase primitives - no system access, minimal code to maintain, fully managed or self-hosted 
 
 > "OpenClaw for people who just want it to work in the cloud, built on Supabase because it already has everything I need."
 
@@ -11,10 +11,11 @@ A cloud-native AI agent for people who don't want to manage infrastructure
 Because I want an AI agent that:
 - I **own and understand** — no black box or code bloat running against my private data
 - Uses **tech I already know and trust** — Supabase, not some new stack
-- Requires **zero infrastructure management** — no VPS, no terminal wrestling, no security headaches
+- Requires **zero infrastructure management** — no VPS, no terminal wrestling, no security headaches, no hardware requirements
 - Is **hackable and customizable** — my code, my rules
+- Is based on existing, battle tested, enterprise ready software you can bring to businesses
 
-Imagine an AI agent that you can setup with one command in the cloud in under 10 minutes as the easy path, all your created resources like persona files and skills are 100% portable to other agent frameworks and still you can self-host this full solution later for maximum privacy and local-model use. And all of that is based on existing, battle tested, enterprise ready software you can bring to businesses.
+Imagine an AI agent that you can setup with one command in the cloud in under 10 minutes as the easy path, all your created resources like persona files and skills are 100% portable to other agent frameworks and still you can self-host this as a full solution later for maximum privacy and local-model use.
 
 ---
 
@@ -23,7 +24,7 @@ Imagine an AI agent that you can setup with one command in the cloud in under 10
 - Web developer with some backend/fullstack experience
 - More "GenZ cloud product user" than sysadmin
 - Comfortable with Supabase, uncomfortable with server infrastructure
-- Already using agents and LLMs, wants to know what code is running
+- Wants to control the code, no vendor lock-in, self-host + full privacy option
 
 ---
 
@@ -49,12 +50,12 @@ Imagine an AI agent that you can setup with one command in the cloud in under 10
 
 - **Core Tools Built-in** - See list of core tools in separate section
 - **Tool extensibility** — easy to add new capabilities
-- **Multi-channel** — same agent, different surfaces
+- **Multi-channel** — same agent, different surfaces (Telegram, Slack, web, etc.)
 
 ### Nice to Have
 
 - **Triggers** - External event automation vs. wasting tokens on heartbeat inference
-- **Deployable in under 10 minutes** — env vars only, no complex config
+- **One line quick install** — env vars only, no complex config
 - **Enterprise-ready path** — for "company as code" / digital employee use cases
 - **Web chat interface** — not just messaging apps
 - **Semantic memory search** — smarter recall
@@ -63,36 +64,19 @@ Imagine an AI agent that you can setup with one command in the cloud in under 10
 
 ## Tools
 
-- Shape & Registry: tools live each in their own file, and are registered in on index. Adding new tools is as easy as adding a new file, the tool shape is a clear contract boundary.
+- Shape & Registry: tools live each in their own file, and are registered in on index. Adding new 
+tools is as easy as adding a new file, the tool shape is a clear contract boundary.
 - Bounded outputs: tool calls and results should be stored in the message timeline.
-- Reliability: must not crash the agent loop; on errors return structured with a clear and informative message for the agent and the assistant should explicitly say when nothing relevant was found.
-- **`list_files`, `read_file`, `write_file`, `edit_file`**
-    - File tools interact with the files table for metadata and the Supabase storage api's for blobs. No direct filesystem access.
-    - Workspace storage only access for the agent
-- **`skills`**
-    - Workspace storage is the source of truth
-    - `list`: returns available skills
-    - `load` returns full `SKILL.md`; `read` returns a referenced text file inside the skill folder.
-    - `install`: Given a SKILL.md file or a Github URL it downloads and re-creates the files in Supabase storage to make them available at skill discovery. Works reliably with many Github link formats.
-- **`web_search / web_fetch`** 
-    — chain-friendly: returns compact structured results (title/url/snippet/etc.) meant to be followed by `web_fetch` for deeper reads; clamp `count`, snippet sizes, and enforce timeouts.
-    - provider-aware + resilient: supports multiple providers with `provider=auto` and fallbacks that prefer free tiers / low-friction setups (use keyless/shared backends when available). Missing keys must not crash the agent run; return actionable structured errors only after fallbacks are exhausted.
-    - Current events guidance:  when recency matters, include the current year in `web_search` queries.
-    - External content safety: `web_fetch` / `web_search` treat external content as untrusted; block SSRF/local targets and support optional allow/deny host lists.
-- **`memory_search`**
-    — mandatory recall step: run before answering about prior decisions/preferences/facts/todos; returns top matching memory items.
-    - Postgres-only: backed by `hybrid_search` over the `memories` table (FTS + pgvector); no local filesystem / no SQLite.
-    - Defaults + knobs: `scope=auto` (global pinned facts + current-session summaries); supports `scope=current|all`, `types`, `max_results`, `match_count` (all clamped).
-- **`cron`**
-    - Let the agent manage reminders and scheduled jobs via the `tasks` table.
-    - Actions: `list|add|update|remove`; `list` excludes disabled tasks by default.
-    - Scheduling: `once` requires `run_at` (ISO-8601); `recurring` requires a 5-field `cron_expr` + optional IANA `timezone` (default `UTC`) and computes/updates `next_run_at`.
-- **`bash`**
-    - Sandboxed virtual shell for text/file processing beyond what `edit_file` or `web_fetch` cover (JSON wrangling, diffing, bulk transforms, piped commands).
-    - Use a simulated bash interpreter with an in-memory virtual filesystem; no host OS access, no real binaries -> more most more simpler use cases
-    - Workspace files are imported on demand and explicitly exported back to Supabase Storage;
-    - Optional allowlisted network access for `curl` (configured via `config.json`, disabled by default).
-    - Session shells: reuse the same virtual filesystem across multiple calls within a single agent invocation for multi-step workflows.
+- Reliability: must not crash the agent loop; on errors return structured with a clear and 
+informative message for the agent and the assistant should explicitly say when nothing relevant 
+was found.
+- **`list_files`, `read_file`, `write_file`, `edit_file`** — Read, write, list, and edit files in the agent's cloud workspace (Supabase Storage). No local filesystem access.
+- **`skills`** — Discover, load, and install portable Agent Skills from the workspace or GitHub.
+- **`web_search`** — Search the web with automatic provider fallback; returns structured results.
+- **`web_fetch`** — Fetch and read the content of a URL as markdown, with SSRF protection.
+- **`memory_search`** — Recall prior decisions, preferences, facts, and context across sessions via hybrid search.
+- **`cron`** — Create, list, update, and remove scheduled tasks and reminders.
+- **`bash`** — Run shell commands in a sandboxed virtual environment for text processing, data wrangling, and multi-step workflows.
 
 ---
 
