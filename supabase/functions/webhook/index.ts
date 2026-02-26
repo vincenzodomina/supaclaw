@@ -17,6 +17,7 @@ import {
   telegramSendChunkedMessage,
   verifyTelegramSecret,
 } from "../_shared/telegram.ts";
+import { DuplicateInboundError } from "../_shared/agent.ts";
 import { uploadFile } from "../_shared/storage.ts";
 import { ChannelUpdate, getChannelAttachment } from "../_shared/channels.ts";
 import { createServiceClient } from "../_shared/supabase.ts";
@@ -199,11 +200,11 @@ async function handleTelegram(req: Request) {
     telegramChatId: chatId,
     streamMode: TELEGRAM_STREAM_PARAMS.mode,
   }).catch((err) => {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes("Failed to insert user message")) {
+    if (err instanceof DuplicateInboundError) {
       logger.info("webhook.telegram.duplicate_message", { updateId });
       return;
     }
+    const msg = err instanceof Error ? err.message : String(err);
     logger.error("webhook.telegram.process_failed", { error: msg, updateId });
     telegramSendChunkedMessage({
       chatId,

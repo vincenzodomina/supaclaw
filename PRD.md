@@ -32,25 +32,16 @@ Imagine an AI agent that you can setup with one command in the cloud in under 10
 
 ### Must Have
 
-- **Supabase as the backbone** — database, storage, cron, edge functions, everything in one place
-- **100% cloud-hosted** — no local runtime or VPS required
-- **Self-hostable via self-hosted Supabase** — independence option
-- **Minimal external dependencies** — as few providers and libraries as possible
-- **Code I can read and understand** — simple enough to hack, re-use existing battle tested software
 - **Soul/Identity system** — customizable personality and behavior
-- **Works with messaging apps I already use** — Telegram, Slack, WhatsApp, etc.
-- **Always-on** — available 24/7 without babysitting a daemon, but as stateless server
+- **Always-on** — available 24/7 without babysitting a daemon, but as stateless server without relying on one device to be always on
+- **File storage** — agent can interact with my files in the cloud, 
+- **Scheduled tasks** — heartbeat, reminders, cron/background jobs - for scheduled health checks / proactive tasks - with reliable retries independent from hardware failure
 - **Session persistence** — conversations survive across devices + parallel use possible
-- **File storage** — agent can read/write my files in the cloud and download to a filesystem when needed
-- **Scheduled tasks** — heartbeat, reminders, cron/background jobs - for scheduled health checks / proactive tasks
-- **Memory** — agent remembers context across sessions
-- **Portability** - Skills, Tools (CLI's), Sub-agents, Soul/Persona files - should use re-usable standards
-
-### Should Have
-
+- **Memory** — agent remembers context across sessions and across devices, with semantic search
 - **Core Tools Built-in** - See list of core tools in separate section
-- **Tool extensibility** — easy to add new capabilities
+- **Tool/Skill extensibility** — easy to add new capabilities
 - **Multi-channel** — same agent, different surfaces (Telegram, Slack, web, etc.)
+- **Portability** - Skills, Tools (CLI's), Sub-agents, Soul/Persona files - should use re-usable standards, importable and exportable
 
 ### Nice to Have
 
@@ -58,7 +49,6 @@ Imagine an AI agent that you can setup with one command in the cloud in under 10
 - **One line quick install** — env vars only, no complex config
 - **Enterprise-ready path** — for "company as code" / digital employee use cases
 - **Web chat interface** — not just messaging apps
-- **Semantic memory search** — smarter recall
 
 ---
 
@@ -84,9 +74,10 @@ was found.
 
 ### Technical Constraints
 
-- **Heavy use of existing Supabase functionality** - No re-inventing the wheel
+- **Supabase as the backbone** — database, storage, cron, edge functions, everything in one place
 - **Stateless server** — all state lives in Supabase
-- **No local filesystem dependency** — everything in cloud storage
+- **100% cloud-hosted or fully self-hostable** — no local runtime or VPS required or independence option
+- **No local filesystem dependency** — everything in cloud storage first, have my files accessible from any device instead of sitting on one
 - **No SQLite** — PostgreSQL only
 - **No custom daemon process** — supabase managed state and schedules, no extra deployment or process
 - **No terminal required for daily use** — manage via UI/chat
@@ -102,9 +93,10 @@ was found.
 ### Philosophical Constraints
 
 - **Understandable > Feature-rich** — I'd rather have less that I understand than more that's magic
+- **Code I can read and understand** — simple enough to hack, re-use existing battle tested software
 - **My data, my control** — even if it's in the cloud, I own the project
 - **Boring tech wins** — Supabase is battle-tested, not bleeding edge
-- **80/20 rule** — optimize for online knowledge work, not local hackery
+- **80/20 rule** — optimize for online knowledge work, not local terminal hackery
 - **Simple vs. Configurable** - Simple things should be simple, complex things should be possible
 
 ---

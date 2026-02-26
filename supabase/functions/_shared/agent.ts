@@ -10,6 +10,13 @@ import { logger } from "./logger.ts";
 import { uploadFile } from "./storage.ts";
 import { createServiceClient } from "./supabase.ts";
 
+export class DuplicateInboundError extends Error {
+  constructor(channelUpdateId: string) {
+    super(`Duplicate inbound message: ${channelUpdateId}`);
+    this.name = "DuplicateInboundError";
+  }
+}
+
 export type LLMProvider = "openai" | "anthropic" | "google" | "bedrock";
 
 const DEFAULT_MODELS: Record<LLMProvider, string> = {
@@ -109,25 +116,41 @@ export async function runAgent({
   const startedAt = Date.now();
   const providerModel = resolveProviderModel(selectedProvider, selectedModel);
 
-  // 1. Upsert session
-  const { data: session, error: sessErr } = await supabase
-    .from("sessions")
-    .upsert(
-      { channel, channel_chat_id: channelChatId, updated_at: new Date().toISOString() },
-      { onConflict: "channel,channel_chat_id" },
-    )
-    .select("id")
-    .single();
-  if (sessErr || !session) {
-    throw new Error(`Session upsert failed: ${sessErr?.message}`);
-  }
-  const sessionId = session.id as string;
-
-  // 2. Insert user message or use existing
+  let sessionId: string;
   let inboundId: number;
+  let resolvedChannel = channel;
+  let resolvedChatId = channelChatId;
+
   if (existingInboundId != null) {
-    inboundId = existingInboundId;
+    // Derive session context from the existing inbound row
+    const { data: inbound, error: loadErr } = await supabase
+      .from("messages")
+      .select("id, session_id, channel, channel_chat_id")
+      .eq("id", existingInboundId)
+      .single();
+    if (loadErr || !inbound) {
+      throw new Error(`Failed to load inbound message ${existingInboundId}: ${loadErr?.message}`);
+    }
+    sessionId = inbound.session_id as string;
+    inboundId = inbound.id as number;
+    resolvedChannel = inbound.channel as string;
+    resolvedChatId = (inbound.channel_chat_id as string) ?? channelChatId;
   } else if (userMessage) {
+    // 1. Upsert session
+    const { data: session, error: sessErr } = await supabase
+      .from("sessions")
+      .upsert(
+        { channel, channel_chat_id: channelChatId, updated_at: new Date().toISOString() },
+        { onConflict: "channel,channel_chat_id" },
+      )
+      .select("id")
+      .single();
+    if (sessErr || !session) {
+      throw new Error(`Session upsert failed: ${sessErr?.message}`);
+    }
+    sessionId = session.id as string;
+
+    // 2. Insert user message (idempotent via unique channel_update_id)
     const { data: inbound, error: inErr } = await supabase
       .from("messages")
       .insert({
@@ -144,29 +167,49 @@ export async function runAgent({
       })
       .select("id")
       .single();
-    if (inErr) throw new Error(`Failed to insert user message: ${inErr.message}`);
+    if (inErr) {
+      if (inErr.code === "23505") throw new DuplicateInboundError(userMessage.channelUpdateId ?? "unknown");
+      throw new Error(`Failed to insert user message: ${inErr.message}`);
+    }
     inboundId = inbound.id as number;
   } else {
     throw new Error("Either userMessage or inboundId must be provided");
   }
 
-  // 3. Insert assistant placeholder
-  const { data: assistantRow, error: saveErr } = await supabase
+  // 3. Reuse existing undelivered assistant row, or create a new placeholder
+  const { data: existing } = await supabase
     .from("messages")
-    .insert({
-      session_id: sessionId,
-      reply_to_message_id: inboundId,
-      role: "assistant",
-      type: "text",
-      content: "",
-      channel,
-      channel_chat_id: channelChatId,
-      channel_sent_at: null,
-    })
-    .select("id")
-    .single();
-  if (saveErr) {
-    throw new Error(`Failed to persist assistant placeholder: ${saveErr.message}`);
+    .select("id, content")
+    .eq("reply_to_message_id", inboundId)
+    .eq("role", "assistant")
+    .eq("type", "text")
+    .is("channel_sent_at", null)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  let assistantRowId: number;
+  if (existing) {
+    assistantRowId = existing.id as number;
+  } else {
+    const { data: assistantRow, error: saveErr } = await supabase
+      .from("messages")
+      .insert({
+        session_id: sessionId,
+        reply_to_message_id: inboundId,
+        role: "assistant",
+        type: "text",
+        content: "",
+        channel: resolvedChannel,
+        channel_chat_id: resolvedChatId,
+        channel_sent_at: null,
+      })
+      .select("id")
+      .single();
+    if (saveErr) {
+      throw new Error(`Failed to persist assistant placeholder: ${saveErr.message}`);
+    }
+    assistantRowId = assistantRow.id as number;
   }
 
   // 4. Build context and stream
@@ -190,9 +233,9 @@ export async function runAgent({
           content: JSON.stringify(args),
           tool_name: chunk.toolName,
           tool_status: "started",
-          channel,
+          channel: resolvedChannel,
           channel_update_id: `tool:${inboundId}:${chunk.toolCallId}`,
-          channel_chat_id: channelChatId,
+          channel_chat_id: resolvedChatId,
         }).select("id").single();
 
         if (error) {
@@ -215,8 +258,7 @@ export async function runAgent({
     async onFinish({ text }) {
       await supabase.from("messages").update({
         content: text.trim(),
-        channel_sent_at: new Date().toISOString(),
-      }).eq("id", assistantRow.id);
+      }).eq("id", assistantRowId);
     },
 
     async onError({ error }) {

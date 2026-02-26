@@ -2,7 +2,7 @@ import { Chat } from "chat";
 import { createSlackAdapter } from "@chat-adapter/slack";
 import { createMemoryState } from "@chat-adapter/state-memory";
 import { createServiceClient } from "../_shared/supabase.ts";
-import { runAgent } from "../_shared/agent.ts";
+import { runAgent, DuplicateInboundError } from "../_shared/agent.ts";
 import { updateTaskAfterRun } from "../_shared/tasks.ts";
 import { mustGetEnv, timingSafeEqual, jsonResponse, textResponse } from "../_shared/helpers.ts";
 import { logger } from "../_shared/logger.ts";
@@ -33,9 +33,7 @@ async function handleSlackMessage(
     });
     await thread.post(result.textStream);
   } catch (err) {
-    if (err instanceof Error && err.message.includes("Failed to insert user message")) {
-      return;
-    }
+    if (err instanceof DuplicateInboundError) return;
     logger.error("slack.agent_error", { error: err });
     await thread.post("I hit an error. Please try again.").catch(() => {});
   }
