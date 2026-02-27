@@ -9,6 +9,7 @@ import { uploadFile } from "../_shared/storage.ts";
 import {
   formatBytes,
   getBearerToken,
+  getConfigString,
   jsonResponse,
   mustGetEnv,
   textResponse,
@@ -43,7 +44,7 @@ if (telegramToken && telegramSecret) {
 }
 
 const bot = new Chat({
-  userName: "supaclaw",
+  userName: getConfigString("agent.name") ?? "supaclaw",
   adapters,
   state: createMemoryState(),
 });
@@ -53,6 +54,25 @@ const bot = new Chat({
 function channelOf(threadId: string): string {
   const i = threadId.indexOf(":");
   return i > 0 ? threadId.slice(0, i) : threadId;
+}
+
+type ReplyMode = "all" | "mention";
+
+function getReplyMode(scope: "dm" | "group"): ReplyMode {
+  const key = scope === "dm"
+    ? "channels.dm.reply_mode"
+    : "channels.group.reply_mode";
+  const value = getConfigString(key);
+  return value === "all" ? "all" : "mention";
+}
+
+function shouldHandleNewMessage(
+  thread: Thread<Record<string, unknown>, unknown>,
+  message: Message<unknown>,
+): boolean {
+  const mode = thread.isDM ? getReplyMode("dm") : getReplyMode("group");
+  if (mode === "all") return true;
+  return Boolean(message.isMention);
 }
 
 async function handleMessage(
@@ -124,6 +144,14 @@ bot.onNewMention(async (thread, message) => {
 
 bot.onSubscribedMessage(async (thread, message) => {
   if (message.author.isMe) return;
+  await handleMessage(thread, message);
+});
+
+bot.onNewMessage(/[\s\S]*/, async (thread, message) => {
+  if (!shouldHandleNewMessage(thread, message)) return;
+  if (thread.isDM) {
+    await thread.subscribe();
+  }
   await handleMessage(thread, message);
 });
 
