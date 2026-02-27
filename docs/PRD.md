@@ -109,16 +109,33 @@ was found.
 
 ---
 
-## Supabase Features to Leverage
+## Technical stack
 
-- **PostgreSQL** — sessions, messages, config, memory
-- **Storage buckets** — files, uploads, assets
-- **pg_cron** — scheduled jobs without external scheduler
-- **Edge Functions** — Running the agent and future extensibility
-- **Row Level Security** — multi-tenant ready if needed
-- **Realtime** — future live updates
-- **Analytics & Logs** - Full observability built-in
-- **Admin Dashboard** - Full access and insight into the data
+Frameworks and libraries and features decided to be used:
+
+***Supabase***
+- PostgreSQL — sessions, messages, config, memory
+- Storage buckets — files, uploads, assets
+- pg_cron — scheduled jobs without external scheduler
+- Edge Functions — Running the agent and future extensibility
+- Row Level Security — multi-tenant ready if needed
+- Analytics & Logs - Full observability built-in
+- Admin Dashboard - Full access and insight into the data
+
+***Vercel AI SDK***
+- Multi-model provider LLM streaming
+- Agent loop + tool calling handling
+- Built in hooks for chunking, error handling etc.
+
+***Vercel Chat SDK***
+- Multi Channel support
+- Message streaming
+- Modals and actions
+
+***Vercel just-bash***
+- Shell actions in memory for most file interactions
+- In memory filesystem pulled from supabase storage
+- Sandbox fallback for the rest
 
 ---
 

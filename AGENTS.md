@@ -16,6 +16,15 @@ Docs:
 https://supabase.com/docs
 Guides: 
 https://supabase.com/docs/guides/platform
+Best Practices:
+https://supabase.com/blog/postgres-best-practices-for-ai-agents
+Official skills from supabase to guide development with supabase:
+https://github.com/supabase/agent-skills
+
+Install skill if not already installed:
+```bash
+npx skills add https://github.com/supabase/agent-skills --skill supabase-postgres-best-practices
+```
 
 ## Vercel AI SDK
 
@@ -35,3 +44,12 @@ node_modules/ai/src/              # Full source code organized by module
 node_modules/ai/docs/             # Official documentation with examples
 
 This means your agent can look up accurate API signatures, implementations, and usage examples directly from the installed package — ensuring it always uses the version of the SDK that's actually installed in your project.
+
+## Vercel Chat SDK
+
+Add the skill if not installed already to get access to latest docs and best practices regarding the implementation of channel providers:
+
+```bash
+npx skills add vercel/chat
+```
+

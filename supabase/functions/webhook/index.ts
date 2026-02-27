@@ -1,30 +1,109 @@
+import { Chat } from "chat";
+import { createSlackAdapter } from "@chat-adapter/slack";
+import { createTelegramAdapter } from "@chat-adapter/telegram";
+import { createMemoryState } from "@chat-adapter/state-memory";
+import { createServiceClient } from "../_shared/supabase.ts";
+import { runAgent, DuplicateInboundError } from "../_shared/agent.ts";
+import { updateTaskAfterRun } from "../_shared/tasks.ts";
+import { uploadFile } from "../_shared/storage.ts";
 import {
   getBearerToken,
+  formatBytes,
   jsonResponse,
   mustGetEnv,
   textResponse,
   timingSafeEqual,
   type VerifiedJwt,
   verifySupabaseJwt,
-  formatBytes,
 } from "../_shared/helpers.ts";
 import { logger } from "../_shared/logger.ts";
-import {
-  isAllowedTelegramUser,
-  runAgentAndStreamToTelegram,
-  telegramDownloadFile,
-  TELEGRAM_STREAM_PARAMS,
-  telegramSendChunkedMessage,
-  verifyTelegramSecret,
-} from "../_shared/telegram.ts";
-import { DuplicateInboundError } from "../_shared/agent.ts";
-import { uploadFile } from "../_shared/storage.ts";
-import { ChannelUpdate, getChannelAttachment } from "../_shared/channels.ts";
-import { createServiceClient } from "../_shared/supabase.ts";
-
-declare const EdgeRuntime: { waitUntil(promise: Promise<unknown>): void };
 
 const supabase = createServiceClient();
+
+// ── Chat SDK bot (Slack + Telegram via unified adapter layer) ────────
+
+const bot = new Chat({
+  userName: "supaclaw",
+  adapters: {
+    slack: createSlackAdapter(),
+    telegram: createTelegramAdapter({
+      secretToken: Deno.env.get("TELEGRAM_WEBHOOK_SECRET"),
+    }),
+  },
+  state: createMemoryState(),
+});
+
+// ── Unified message handler for all channels ────────────────────────
+
+function channelOf(threadId: string): string {
+  const i = threadId.indexOf(":");
+  return i > 0 ? threadId.slice(0, i) : threadId;
+}
+
+// deno-lint-ignore no-explicit-any
+async function handleMessage(thread: any, message: any) {
+  const channel = channelOf(thread.id);
+
+  if (channel === "telegram") {
+    const allowedId = Deno.env.get("TELEGRAM_ALLOWED_USER_ID")?.trim();
+    if (allowedId && message.author.userId !== allowedId) return;
+  }
+
+  let content = (message.text ?? "").trim();
+  let fileId: string | undefined;
+
+  if (message.attachments?.length) {
+    const att = message.attachments[0];
+    const raw = await att.fetchData();
+    const data = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+    const safeName = (att.name ?? "file").replace(/[^a-zA-Z0-9._-]/g, "_");
+    const objectPath = `uploads/${message.id}_${safeName}`;
+    const file = await uploadFile(objectPath, data, {
+      name: att.name,
+      mimeType: att.mimeType,
+    });
+    fileId = file.id;
+
+    const meta = [att.name ?? "file"];
+    if (att.mimeType) meta.push(att.mimeType);
+    if (att.size) meta.push(formatBytes(att.size));
+    const desc = `[File: ${meta.join(", ")}] → ${objectPath}`;
+    content = content ? `${desc}\n${content}` : desc;
+  }
+
+  if (!content && !fileId) return;
+
+  try {
+    const result = await runAgent({
+      channel,
+      channelChatId: thread.id,
+      userMessage: {
+        content,
+        channelUpdateId: message.id,
+        channelMessageId: message.id,
+        channelFromUserId: message.author.userId,
+        fileId,
+      },
+    });
+    await thread.post(result.textStream);
+  } catch (err) {
+    if (err instanceof DuplicateInboundError) return;
+    logger.error("webhook.agent_error", { channel, error: err });
+    await thread.post("I hit an error. Please try again.").catch(() => {});
+  }
+}
+
+bot.onNewMention(async (thread, message) => {
+  await thread.subscribe();
+  await handleMessage(thread, message);
+});
+
+bot.onSubscribedMessage(async (thread, message) => {
+  if (message.author.isMe) return;
+  await handleMessage(thread, message);
+});
+
+// ── Trigger (external services / job enqueue) ───────────────────────
 
 const ALLOWED_JOB_TYPES = new Set([
   "trigger",
@@ -40,37 +119,16 @@ type AuthContext =
 
 async function authorizeTrigger(req: Request): Promise<AuthContext> {
   const token = getBearerToken(req);
-
   if (timingSafeEqual(mustGetEnv("TRIGGER_WEBHOOK_SECRET"), token)) {
     return { authType: "secret" };
   }
-
   const claims = await verifySupabaseJwt(token);
   if (!claims.sub) throw new Error("Invalid JWT: missing subject claim");
-
   const role = typeof claims.role === "string" ? claims.role : null;
   if (!role || (role !== "authenticated" && role !== "service_role")) {
     throw new Error("Invalid JWT role for this endpoint");
   }
-
   return { authType: "jwt", claims };
-}
-
-function routeHead(req: Request): "trigger" | "telegram" | null {
-  const { pathname } = new URL(req.url);
-  const parts = pathname.split("/").filter(Boolean);
-  // Edge runtime can forward either "/webhook/<route>" or
-  // "/functions/v1/webhook/<route>" depending on invocation path.
-  const short = parts.length === 2 && parts[0] === "webhook" ? parts[1] : null;
-  const full = parts.length === 4 &&
-      parts[0] === "functions" &&
-      parts[1] === "v1" &&
-      parts[2] === "webhook"
-    ? parts[3]
-    : null;
-  const head = short ?? full;
-  if (head !== "trigger" && head !== "telegram") return null;
-  return head;
 }
 
 async function handleTrigger(req: Request) {
@@ -93,15 +151,16 @@ async function handleTrigger(req: Request) {
   const type = typeof body?.type === "string" ? body.type : "trigger";
   if (!ALLOWED_JOB_TYPES.has(type)) {
     logger.warn("webhook.trigger.unsupported_type", { type });
-    return jsonResponse({ ok: false, error: `unsupported job type: ${type}` }, {
-      status: 400,
-    });
+    return jsonResponse(
+      { ok: false, error: `unsupported job type: ${type}` },
+      { status: 400 },
+    );
   }
+
   const dedupeKey =
     typeof body?.dedupe_key === "string" && body.dedupe_key.trim()
       ? body.dedupe_key
       : `trigger:${crypto.randomUUID()}`;
-
   const payload = typeof body?.payload === "object" && body.payload
     ? body.payload
     : body;
@@ -133,93 +192,103 @@ async function handleTrigger(req: Request) {
   return jsonResponse({ ok: true, job_id: data });
 }
 
-async function handleTelegram(req: Request) {
+// ── Cron: process due tasks (Slack sessions) ────────────────────────
+
+async function handleCron(req: Request) {
   if (req.method !== "POST") {
     return textResponse("method not allowed", { status: 405 });
   }
-  if (!verifyTelegramSecret(req)) {
-    logger.warn("webhook.telegram.secret_mismatch");
+  const secret = mustGetEnv("WORKER_SECRET");
+  if (!timingSafeEqual(secret, req.headers.get("x-worker-secret") ?? "")) {
     return textResponse("forbidden", { status: 403 });
   }
 
-  let update: ChannelUpdate;
-  try {
-    update = (await req.json()) as ChannelUpdate;
-  } catch {
-    logger.warn("webhook.telegram.invalid_json");
-    return textResponse("invalid json", { status: 400 });
+  const { data: tasks, error } = await supabase
+    .from("tasks")
+    .select(
+      "id, prompt, task_type, session_id, sessions!inner(channel_chat_id)",
+    )
+    .not("enabled_at", "is", null)
+    .not("next_run_at", "is", null)
+    .lte("next_run_at", new Date().toISOString())
+    .eq("sessions.channel", "slack");
+  if (error) {
+    logger.error("webhook.cron.query_failed", { error });
+    return jsonResponse({ ok: false, error: error.message }, { status: 500 });
   }
-  const message = update.message ?? update.edited_message;
-  if (!message) return textResponse("ok");
+  if (!tasks?.length) return jsonResponse({ ok: true, processed: 0 });
 
-  if (!isAllowedTelegramUser(message)) {
-    logger.info("webhook.telegram.user_not_allowed");
-    return textResponse("ok");
-  }
+  const results: Array<{ taskId: number; ok: boolean; error?: string }> = [];
 
-  const chatId = String(message.chat.id);
-  const updateId = String(update.update_id);
-  const messageId = String(message.message_id);
-  const fromUserId = message.from?.id == null ? null : String(message.from.id);
+  for (const task of tasks) {
+    const joined = task.sessions as unknown as { channel_chat_id: string };
+    const threadId = joined.channel_chat_id;
+    const taskType = (task.task_type as string) || "reminder";
+    const prompt = task.prompt as string;
 
-  const attachment = getChannelAttachment(message);
-  let content = typeof message.text === "string" && message.text.trim()
-    ? message.text
-    : undefined;
-  let fileId: string | undefined;
+    try {
+      await supabase.from("tasks").update({ next_run_at: null }).eq(
+        "id",
+        task.id,
+      );
 
-  if (attachment) {
-    const downloaded = await telegramDownloadFile(attachment.fileId);
-    const safeName = attachment.fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const objectPath = `uploads/${updateId}_${safeName}`;
-    const file = await uploadFile(objectPath, downloaded.data, {
-      name: attachment.fileName,
-      mimeType: attachment.mimeType,
-    });
-    fileId = file.id;
+      const role = taskType === "agent_turn"
+        ? "user" as const
+        : "system" as const;
+      const content = taskType === "reminder" ? `Reminder: ${prompt}` : prompt;
 
-    const meta = [attachment.fileName];
-    if (attachment.mimeType) meta.push(attachment.mimeType);
-    if (downloaded.size) meta.push(formatBytes(downloaded.size));
-    const desc = `[File: ${meta.join(", ")}] → ${objectPath}`;
-    content = attachment.caption ? `${desc}\n${attachment.caption}` : desc;
-  }
+      const result = await runAgent({
+        channel: "slack",
+        channelChatId: threadId,
+        userMessage: {
+          content,
+          role,
+          channelUpdateId: `task:${task.id}:${Date.now()}`,
+        },
+      });
 
-  if (!content && !fileId) return textResponse("ok");
+      const channelId = threadId.split(":").slice(0, 2).join(":");
+      await bot.channel(channelId).post(result.textStream);
 
-  const processing = runAgentAndStreamToTelegram({
-    channel: "telegram",
-    channelChatId: chatId,
-    userMessage: {
-      content: content ?? "",
-      channelUpdateId: updateId,
-      channelMessageId: messageId,
-      channelFromUserId: fromUserId ?? undefined,
-      fileId,
-    },
-    telegramChatId: chatId,
-    streamMode: TELEGRAM_STREAM_PARAMS.mode,
-  }).catch((err) => {
-    if (err instanceof DuplicateInboundError) {
-      logger.info("webhook.telegram.duplicate_message", { updateId });
-      return;
+      await updateTaskAfterRun(task.id);
+      results.push({ taskId: task.id, ok: true });
+      logger.info("webhook.cron.task_done", { taskId: task.id });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error("webhook.cron.task_failed", { taskId: task.id, error: msg });
+      await updateTaskAfterRun(task.id);
+      results.push({ taskId: task.id, ok: false, error: msg });
     }
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.error("webhook.telegram.process_failed", { error: msg, updateId });
-    telegramSendChunkedMessage({
-      chatId,
-      text: "I hit a temporary issue generating a response. Please try again in a moment.",
-    }).catch(() => {});
-  });
+  }
 
-  EdgeRuntime.waitUntil(processing);
-  return textResponse("ok");
+  return jsonResponse({ ok: true, processed: results.length, results });
+}
+
+// ── Router ──────────────────────────────────────────────────────────
+
+type Route = "trigger" | "telegram" | "slack" | "cron";
+const ROUTES = new Set<Route>(["trigger", "telegram", "slack", "cron"]);
+
+function routeHead(req: Request): Route | null {
+  const { pathname } = new URL(req.url);
+  const parts = pathname.split("/").filter(Boolean);
+  const head =
+    (parts.length === 2 && parts[0] === "webhook" ? parts[1] : null) ??
+    (parts.length === 4 &&
+        parts[0] === "functions" &&
+        parts[1] === "v1" &&
+        parts[2] === "webhook"
+      ? parts[3]
+      : null);
+  return head && ROUTES.has(head as Route) ? (head as Route) : null;
 }
 
 Deno.serve(async (req) => {
   const head = routeHead(req);
   if (head === "trigger") return await handleTrigger(req);
-  if (head === "telegram") return await handleTelegram(req);
+  if (head === "slack") return await bot.webhooks.slack(req);
+  if (head === "telegram") return await bot.webhooks.telegram(req);
+  if (head === "cron") return await handleCron(req);
   logger.warn("webhook.route_not_found", { path: new URL(req.url).pathname });
   return textResponse("not found", { status: 404 });
 });
