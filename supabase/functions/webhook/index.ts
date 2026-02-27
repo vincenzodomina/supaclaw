@@ -1,4 +1,4 @@
-import { Chat } from "chat";
+import { Adapter, Attachment, Chat, Message, Thread } from "chat";
 import { createSlackAdapter } from "@chat-adapter/slack";
 import { createTelegramAdapter } from "@chat-adapter/telegram";
 import { createMemoryState } from "@chat-adapter/state-memory";
@@ -20,16 +20,28 @@ import { logger } from "../_shared/logger.ts";
 
 const supabase = createServiceClient();
 
-// ── Chat SDK bot (Slack + Telegram via unified adapter layer) ────────
+const adapters: Record<string, Adapter> = {};
+
+const slackToken = Deno.env.get("SLACK_BOT_TOKEN");
+const slackSecret = Deno.env.get("SLACK_SIGNING_SECRET");
+if (slackToken && slackSecret) {
+  adapters.slack = createSlackAdapter({
+    botToken: slackToken,
+    signingSecret: slackSecret,
+  });
+}
+
+const telegramToken = Deno.env.get("TELEGRAM_BOT_TOKEN");
+if (telegramToken) {
+  adapters.telegram = createTelegramAdapter({
+    botToken: telegramToken,
+    secretToken: Deno.env.get("TELEGRAM_WEBHOOK_SECRET"),
+  });
+}
 
 const bot = new Chat({
   userName: "supaclaw",
-  adapters: {
-    slack: createSlackAdapter(),
-    telegram: createTelegramAdapter({
-      secretToken: Deno.env.get("TELEGRAM_WEBHOOK_SECRET"),
-    }),
-  },
+  adapters,
   state: createMemoryState(),
 });
 
@@ -40,8 +52,7 @@ function channelOf(threadId: string): string {
   return i > 0 ? threadId.slice(0, i) : threadId;
 }
 
-// deno-lint-ignore no-explicit-any
-async function handleMessage(thread: any, message: any) {
+async function handleMessage(thread: Thread<Record<string, unknown>, unknown>, message: Message<unknown>) {
   const channel = channelOf(thread.id);
 
   if (channel === "telegram") {
@@ -53,8 +64,12 @@ async function handleMessage(thread: any, message: any) {
   let fileId: string | undefined;
 
   if (message.attachments?.length) {
-    const att = message.attachments[0];
-    const raw = await att.fetchData();
+    const att = message.attachments[0] as Attachment;
+    const raw = await att?.fetchData?.();
+    if (!raw) {
+      logger.error("webhook.message.attachment_fetch_failed", { channel, messageId: message.id });
+      return;
+    };
     const data = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
     const safeName = (att.name ?? "file").replace(/[^a-zA-Z0-9._-]/g, "_");
     const objectPath = `uploads/${message.id}_${safeName}`;
@@ -286,8 +301,8 @@ function routeHead(req: Request): Route | null {
 Deno.serve(async (req) => {
   const head = routeHead(req);
   if (head === "trigger") return await handleTrigger(req);
-  if (head === "slack") return await bot.webhooks.slack(req);
-  if (head === "telegram") return await bot.webhooks.telegram(req);
+  if (head === "slack" && adapters.slack) return await bot.webhooks.slack(req);
+  if (head === "telegram" && adapters.telegram) return await bot.webhooks.telegram(req);
   if (head === "cron") return await handleCron(req);
   logger.warn("webhook.route_not_found", { path: new URL(req.url).pathname });
   return textResponse("not found", { status: 404 });
