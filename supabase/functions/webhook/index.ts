@@ -3,12 +3,12 @@ import { createSlackAdapter } from "@chat-adapter/slack";
 import { createTelegramAdapter } from "@chat-adapter/telegram";
 import { createMemoryState } from "@chat-adapter/state-memory";
 import { createServiceClient } from "../_shared/supabase.ts";
-import { runAgent, DuplicateInboundError } from "../_shared/agent.ts";
+import { DuplicateInboundError, runAgent } from "../_shared/agent.ts";
 import { updateTaskAfterRun } from "../_shared/tasks.ts";
 import { uploadFile } from "../_shared/storage.ts";
 import {
-  getBearerToken,
   formatBytes,
+  getBearerToken,
   jsonResponse,
   mustGetEnv,
   textResponse,
@@ -17,6 +17,8 @@ import {
   verifySupabaseJwt,
 } from "../_shared/helpers.ts";
 import { logger } from "../_shared/logger.ts";
+
+declare const EdgeRuntime: { waitUntil(promise: Promise<unknown>): void };
 
 const supabase = createServiceClient();
 
@@ -32,10 +34,11 @@ if (slackToken && slackSecret) {
 }
 
 const telegramToken = Deno.env.get("TELEGRAM_BOT_TOKEN");
-if (telegramToken) {
+const telegramSecret = Deno.env.get("TELEGRAM_WEBHOOK_SECRET");
+if (telegramToken && telegramSecret) {
   adapters.telegram = createTelegramAdapter({
     botToken: telegramToken,
-    secretToken: Deno.env.get("TELEGRAM_WEBHOOK_SECRET"),
+    secretToken: telegramSecret,
   });
 }
 
@@ -52,7 +55,10 @@ function channelOf(threadId: string): string {
   return i > 0 ? threadId.slice(0, i) : threadId;
 }
 
-async function handleMessage(thread: Thread<Record<string, unknown>, unknown>, message: Message<unknown>) {
+async function handleMessage(
+  thread: Thread<Record<string, unknown>, unknown>,
+  message: Message<unknown>,
+) {
   const channel = channelOf(thread.id);
 
   if (channel === "telegram") {
@@ -67,9 +73,12 @@ async function handleMessage(thread: Thread<Record<string, unknown>, unknown>, m
     const att = message.attachments[0] as Attachment;
     const raw = await att?.fetchData?.();
     if (!raw) {
-      logger.error("webhook.message.attachment_fetch_failed", { channel, messageId: message.id });
+      logger.error("webhook.message.attachment_fetch_failed", {
+        channel,
+        messageId: message.id,
+      });
       return;
-    };
+    }
     const data = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
     const safeName = (att.name ?? "file").replace(/[^a-zA-Z0-9._-]/g, "_");
     const objectPath = `uploads/${message.id}_${safeName}`;
@@ -289,20 +298,26 @@ function routeHead(req: Request): Route | null {
   const parts = pathname.split("/").filter(Boolean);
   const head =
     (parts.length === 2 && parts[0] === "webhook" ? parts[1] : null) ??
-    (parts.length === 4 &&
-        parts[0] === "functions" &&
-        parts[1] === "v1" &&
-        parts[2] === "webhook"
-      ? parts[3]
-      : null);
+      (parts.length === 4 &&
+          parts[0] === "functions" &&
+          parts[1] === "v1" &&
+          parts[2] === "webhook"
+        ? parts[3]
+        : null);
   return head && ROUTES.has(head as Route) ? (head as Route) : null;
 }
 
 Deno.serve(async (req) => {
   const head = routeHead(req);
   if (head === "trigger") return await handleTrigger(req);
-  if (head === "slack" && adapters.slack) return await bot.webhooks.slack(req);
-  if (head === "telegram" && adapters.telegram) return await bot.webhooks.telegram(req);
+  if (head === "slack" && adapters.slack) {
+    return await bot.webhooks.slack(req, { waitUntil: EdgeRuntime.waitUntil });
+  }
+  if (head === "telegram" && adapters.telegram) {
+    return await bot.webhooks.telegram(req, {
+      waitUntil: EdgeRuntime.waitUntil,
+    });
+  }
   if (head === "cron") return await handleCron(req);
   logger.warn("webhook.route_not_found", { path: new URL(req.url).pathname });
   return textResponse("not found", { status: 404 });
