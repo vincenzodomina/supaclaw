@@ -2,16 +2,20 @@ import { createServiceClient } from "../_shared/supabase.ts";
 import { buildSkillsInstructionsBlock } from "./skills.ts";
 import { downloadTextFromWorkspace } from "./storage.ts";
 import { getConfigNumber } from "./helpers.ts";
+import type { Tables } from "./database.types.ts";
 
-export type ChatMessage = {
-  role: "system" | "user" | "assistant";
-  content: string;
-};
-
-type RecentMessage = {
-  role: "system" | "user" | "assistant";
-  content: string;
-};
+type MessageRow =
+  | Pick<
+    Tables<"messages">,
+    | "role"
+    | "content"
+    | "file_id"
+    | "tool_name"
+    | "tool_result"
+    | "tool_status"
+    | "tool_error"
+  >
+  | { role: "system"; content: string };
 
 async function buildSystemPrompt(): Promise<string> {
   const [agents, soul, identity, user, bootstrap, heartbeat, tools, memory] =
@@ -69,14 +73,14 @@ async function buildSystemPrompt(): Promise<string> {
   return parts.join("\n");
 }
 
-
 export async function buildInputMessages({
   sessionId,
 }: {
   sessionId: string;
-}): Promise<ChatMessage[]> {
+}): Promise<MessageRow[]> {
   const supabase = createServiceClient();
-  const latestMessagesCount = getConfigNumber("agent.latest_messages_count") ?? 20;
+  const latestMessagesCount = getConfigNumber("agent.latest_messages_count") ??
+    20;
 
   const systemPrompt = await buildSystemPrompt();
 
@@ -84,9 +88,10 @@ export async function buildInputMessages({
   // Query newest first for index efficiency, then reverse for chronological model input.
   const { data: recent, error: recentErr } = await supabase
     .from("messages")
-    .select("role, content")
+    .select(
+      "role, content, file_id, tool_name, tool_result, tool_status, tool_error",
+    )
     .eq("session_id", sessionId)
-    .eq("type", "text")
     .in("role", ["user", "assistant"])
     .order("created_at", { ascending: false })
     .limit(latestMessagesCount);
@@ -94,12 +99,9 @@ export async function buildInputMessages({
     throw new Error(`Failed to load recent messages: ${recentErr.message}`);
   }
 
-  const messages: ChatMessage[] = [
+  const messages: MessageRow[] = [
     { role: "system", content: systemPrompt },
-    ...(recent ?? []).reverse().map((m: RecentMessage) => ({
-      role: m.role,
-      content: m.content,
-    })),
+    ...(recent ?? []).reverse(),
   ];
 
   return messages;

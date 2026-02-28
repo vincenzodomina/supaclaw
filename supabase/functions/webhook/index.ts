@@ -147,29 +147,39 @@ async function handleMessage(
   let fileId: string | undefined;
 
   if (message.attachments?.length) {
-    const att = message.attachments[0] as Attachment;
-    const raw = await att?.fetchData?.();
-    if (!raw) {
-      logger.error("webhook.message.attachment_fetch_failed", {
-        channel,
-        messageId: message.id,
-      });
-      return;
-    }
-    const data = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
-    const safeName = (att.name ?? "file").replace(/[^a-zA-Z0-9._-]/g, "_");
-    const objectPath = `uploads/${message.id}_${safeName}`;
-    const file = await uploadFile(objectPath, data, {
-      name: att.name,
-      mimeType: att.mimeType,
-    });
-    fileId = file.id;
+    const attachmentDescriptions: string[] = [];
 
-    const meta = [att.name ?? "file"];
-    if (att.mimeType) meta.push(att.mimeType);
-    if (att.size) meta.push(formatBytes(att.size));
-    const desc = `[File: ${meta.join(", ")}] → ${objectPath}`;
-    content = content ? `${desc}\n${content}` : desc;
+    for (const [index, attachment] of message.attachments.entries()) {
+      const att = attachment as Attachment;
+      const raw = await att?.fetchData?.();
+      if (!raw) {
+        logger.error("webhook.message.attachment_fetch_failed", {
+          channel,
+          messageId: message.id,
+          attachmentIndex: index,
+        });
+        continue;
+      }
+
+      const data = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+      const safeName = (att.name ?? "file").replace(/[^a-zA-Z0-9._-]/g, "_");
+      const objectPath = `uploads/${message.id}_${index}_${safeName}`;
+      const file = await uploadFile(objectPath, data, {
+        name: att.name,
+        mimeType: att.mimeType,
+      });
+      if (!fileId) fileId = file.id;
+
+      const meta = [att.name ?? "file"];
+      if (att.mimeType) meta.push(att.mimeType);
+      if (att.size) meta.push(formatBytes(att.size));
+      attachmentDescriptions.push(`[File: ${meta.join(", ")}] → ${objectPath}`);
+    }
+
+    if (attachmentDescriptions.length) {
+      const attachmentsText = attachmentDescriptions.join("\n");
+      content = content ? `${attachmentsText}\n${content}` : attachmentsText;
+    }
   }
 
   if (!content && !fileId) return;
