@@ -8,7 +8,7 @@ create extension if not exists pg_cron;
 create extension if not exists supabase_vault cascade;
 
 -- Enums
-create type enum_channel_provider as enum ('telegram', 'slack', 'whatsapp', 'discord', 'imessage', 'phone', 'email', 'web', 'mobile', 'desktop', 'api');
+create type enum_channel_provider as enum ('telegram', 'slack', 'teams', 'whatsapp', 'discord', 'imessage', 'phone', 'email', 'web', 'mobile', 'desktop', 'api');
 create type enum_message_role as enum ('assistant', 'user', 'system');
 create type enum_message_type as enum ('text', 'tool-call', 'file');
 create type enum_message_tool_status as enum ('started', 'succeeded', 'failed');

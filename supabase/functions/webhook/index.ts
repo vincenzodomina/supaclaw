@@ -1,5 +1,7 @@
 import { Adapter, Attachment, Chat, Message, Thread } from "chat";
+import { createDiscordAdapter } from "@chat-adapter/discord";
 import { createSlackAdapter } from "@chat-adapter/slack";
+import { createTeamsAdapter } from "@chat-adapter/teams";
 import { createTelegramAdapter } from "@chat-adapter/telegram";
 import { createMemoryState } from "@chat-adapter/state-memory";
 import { createServiceClient } from "../_shared/supabase.ts";
@@ -40,6 +42,36 @@ if (telegramToken && telegramSecret) {
   adapters.telegram = createTelegramAdapter({
     botToken: telegramToken,
     secretToken: telegramSecret,
+  });
+}
+
+const teamsAppId = Deno.env.get("TEAMS_APP_ID");
+const teamsAppPassword = Deno.env.get("TEAMS_APP_PASSWORD");
+if (teamsAppId && teamsAppPassword) {
+  const appType = Deno.env.get("TEAMS_APP_TYPE") === "SingleTenant"
+    ? "SingleTenant"
+    : "MultiTenant";
+  const teamsTenantId = Deno.env.get("TEAMS_APP_TENANT_ID");
+  adapters.teams = createTeamsAdapter({
+    appId: teamsAppId,
+    appPassword: teamsAppPassword,
+    appType,
+    appTenantId: appType === "SingleTenant" ? teamsTenantId : undefined,
+  });
+}
+
+const discordBotToken = Deno.env.get("DISCORD_BOT_TOKEN");
+const discordPublicKey = Deno.env.get("DISCORD_PUBLIC_KEY");
+const discordApplicationId = Deno.env.get("DISCORD_APPLICATION_ID");
+if (discordBotToken && discordPublicKey && discordApplicationId) {
+  adapters.discord = createDiscordAdapter({
+    botToken: discordBotToken,
+    publicKey: discordPublicKey,
+    applicationId: discordApplicationId,
+    mentionRoleIds: Deno.env.get("DISCORD_MENTION_ROLE_IDS")
+      ?.split(",")
+      .map((id) => id.trim())
+      .filter(Boolean),
   });
 }
 
@@ -318,8 +350,15 @@ async function handleCron(req: Request) {
 
 // ── Router ──────────────────────────────────────────────────────────
 
-type Route = "trigger" | "telegram" | "slack" | "cron";
-const ROUTES = new Set<Route>(["trigger", "telegram", "slack", "cron"]);
+type Route = "trigger" | "telegram" | "slack" | "teams" | "discord" | "cron";
+const ROUTES = new Set<Route>([
+  "trigger",
+  "telegram",
+  "slack",
+  "teams",
+  "discord",
+  "cron",
+]);
 
 function routeHead(req: Request): Route | null {
   const { pathname } = new URL(req.url);
@@ -343,6 +382,14 @@ Deno.serve(async (req) => {
   }
   if (head === "telegram" && adapters.telegram) {
     return await bot.webhooks.telegram(req, {
+      waitUntil: EdgeRuntime.waitUntil,
+    });
+  }
+  if (head === "teams" && adapters.teams) {
+    return await bot.webhooks.teams(req, { waitUntil: EdgeRuntime.waitUntil });
+  }
+  if (head === "discord" && adapters.discord) {
+    return await bot.webhooks.discord(req, {
       waitUntil: EdgeRuntime.waitUntil,
     });
   }
