@@ -62,7 +62,6 @@ create table if not exists messages (
   fts tsvector generated always as (to_tsvector('english', content)) stored,
   -- Vector search (384 dims for gte-small)
   embedding extensions.vector(384),
-  channel enum_channel_provider not null,
   channel_update_id text,
   channel_message_id text,
   channel_chat_id text,
@@ -81,8 +80,8 @@ create table if not exists messages (
 
 alter table messages enable row level security;
 
-create unique index if not exists messages_channel_update_id_uniq
-  on messages (channel, channel_update_id)
+create unique index if not exists messages_session_update_id_uniq
+  on messages (session_id, channel_update_id)
   where channel_update_id is not null;
 
 create index if not exists messages_session_created_idx
