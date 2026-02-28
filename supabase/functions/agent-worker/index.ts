@@ -5,11 +5,11 @@ import {
   textResponse,
   timingSafeEqual,
 } from "../_shared/helpers.ts";
-import { TELEGRAM_STREAM_PARAMS } from "../_shared/telegram.ts";
 import { logger } from "../_shared/logger.ts";
 import { embedText } from "../_shared/embeddings.ts";
 import { updateTaskAfterRun } from "../_shared/tasks.ts";
-import { runAgentAndStreamToTelegram } from "../_shared/telegram.ts";
+import { createChatBot } from "../_shared/bot.ts";
+import { runAgent } from "../_shared/agent.ts";
 
 type JobRow = {
   id: number;
@@ -18,6 +18,29 @@ type JobRow = {
 };
 
 const supabase = createServiceClient();
+const { bot, adapters } = createChatBot();
+
+const FALLBACK_REPLY =
+  "I hit a temporary issue generating a response. Please try again in a moment.";
+
+function normalizeThreadId(channel: string, raw: string): string {
+  const value = String(raw ?? "").trim();
+  if (!value) return value;
+
+  if (channel === "telegram") {
+    return value.startsWith("telegram:") ? value : `telegram:${value}`;
+  }
+  if (channel === "slack") {
+    return value.startsWith("slack:") ? value : `slack:${value}`;
+  }
+  if (channel === "teams") {
+    return value.startsWith("teams:") ? value : `teams:${value}`;
+  }
+  if (channel === "discord") {
+    return value.startsWith("discord:") ? value : `discord:${value}`;
+  }
+  return value;
+}
 
 function isAuthorized(req: Request) {
   const expected = mustGetEnv("WORKER_SECRET");
@@ -75,26 +98,38 @@ async function processRunTask(job: JobRow) {
     .maybeSingle();
   if (sessErr) throw new Error(`Failed to load session: ${sessErr.message}`);
   if (!session) throw new Error(`Session not found: ${sessionId}`);
-  if (session.channel !== "telegram") {
-    logger.info("job.run_task.skip_channel", { jobId: job.id, taskId, channel: session.channel });
+
+  const channel = String(session.channel ?? "").trim();
+  const threadId = normalizeThreadId(channel, session.channel_chat_id);
+  if (!channel || !threadId) {
+    throw new Error("Session is missing channel or channel_chat_id");
+  }
+
+  if (!adapters[channel]) {
+    logger.info("job.run_task.skip_missing_adapter", {
+      jobId: job.id,
+      taskId,
+      channel,
+    });
     return;
   }
 
-  const chatId = session.channel_chat_id;
   const role = taskType === "agent_turn" ? "user" as const : "system" as const;
   const content = taskType === "reminder" ? `Reminder: ${prompt}` : prompt;
 
-  await runAgentAndStreamToTelegram({
-    channel: session.channel,
-    channelChatId: chatId,
+  const result = await runAgent({
+    channel,
+    channelChatId: threadId,
     userMessage: {
       content,
       role,
       channelUpdateId: `task:${taskId}:${Date.now()}`,
     },
-    telegramChatId: chatId,
-    streamMode: TELEGRAM_STREAM_PARAMS.mode,
   });
+
+  const reply = ((await result.text) ?? "").trim() || FALLBACK_REPLY;
+  const adapter = bot.getAdapter(channel as never);
+  await adapter.postMessage(threadId, reply);
 
   await updateTaskAfterRun(taskId);
 

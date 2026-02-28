@@ -1,14 +1,9 @@
-import { Adapter, Attachment, Chat, Message, Thread } from "chat";
-import { createDiscordAdapter } from "@chat-adapter/discord";
-import { createSlackAdapter } from "@chat-adapter/slack";
-import { createTeamsAdapter } from "@chat-adapter/teams";
-import { createTelegramAdapter } from "@chat-adapter/telegram";
-import { createMemoryState } from "@chat-adapter/state-memory";
+import { Attachment, Message, Thread } from "chat";
 import { createServiceClient } from "../_shared/supabase.ts";
 import { DuplicateInboundError, runAgent } from "../_shared/agent.ts";
-import { updateTaskAfterRun } from "../_shared/tasks.ts";
 import { uploadFile } from "../_shared/storage.ts";
 import { toolDisplay } from "../_shared/tools/index.ts";
+import { createChatBot } from "../_shared/bot.ts";
 import {
   formatBytes,
   getBearerToken,
@@ -28,61 +23,7 @@ declare const EdgeRuntime: { waitUntil(promise: Promise<unknown>): void };
 
 const supabase = createServiceClient();
 
-const adapters: Record<string, Adapter> = {};
-
-const slackToken = Deno.env.get("SLACK_BOT_TOKEN");
-const slackSecret = Deno.env.get("SLACK_SIGNING_SECRET");
-if (slackToken && slackSecret) {
-  adapters.slack = createSlackAdapter({
-    botToken: slackToken,
-    signingSecret: slackSecret,
-  });
-}
-
-const telegramToken = Deno.env.get("TELEGRAM_BOT_TOKEN");
-const telegramSecret = Deno.env.get("TELEGRAM_WEBHOOK_SECRET");
-if (telegramToken && telegramSecret) {
-  adapters.telegram = createTelegramAdapter({
-    botToken: telegramToken,
-    secretToken: telegramSecret,
-  });
-}
-
-const teamsAppId = Deno.env.get("TEAMS_APP_ID");
-const teamsAppPassword = Deno.env.get("TEAMS_APP_PASSWORD");
-if (teamsAppId && teamsAppPassword) {
-  const appType = Deno.env.get("TEAMS_APP_TYPE") === "SingleTenant"
-    ? "SingleTenant"
-    : "MultiTenant";
-  const teamsTenantId = Deno.env.get("TEAMS_APP_TENANT_ID");
-  adapters.teams = createTeamsAdapter({
-    appId: teamsAppId,
-    appPassword: teamsAppPassword,
-    appType,
-    appTenantId: appType === "SingleTenant" ? teamsTenantId : undefined,
-  });
-}
-
-const discordBotToken = Deno.env.get("DISCORD_BOT_TOKEN");
-const discordPublicKey = Deno.env.get("DISCORD_PUBLIC_KEY");
-const discordApplicationId = Deno.env.get("DISCORD_APPLICATION_ID");
-if (discordBotToken && discordPublicKey && discordApplicationId) {
-  adapters.discord = createDiscordAdapter({
-    botToken: discordBotToken,
-    publicKey: discordPublicKey,
-    applicationId: discordApplicationId,
-    mentionRoleIds: Deno.env.get("DISCORD_MENTION_ROLE_IDS")
-      ?.split(",")
-      .map((id) => id.trim())
-      .filter(Boolean),
-  });
-}
-
-const bot = new Chat({
-  userName: getConfigString("agent.name") ?? "supaclaw",
-  adapters,
-  state: createMemoryState(),
-});
+const { bot, adapters } = createChatBot();
 
 // ── Unified message handler for all channels ────────────────────────
 
@@ -385,88 +326,15 @@ async function handleTrigger(req: Request) {
   return jsonResponse({ ok: true, job_id: data });
 }
 
-// ── Cron: process due tasks (Slack sessions) ────────────────────────
-
-async function handleCron(req: Request) {
-  if (req.method !== "POST") {
-    return textResponse("method not allowed", { status: 405 });
-  }
-  const secret = mustGetEnv("WORKER_SECRET");
-  if (!timingSafeEqual(secret, req.headers.get("x-worker-secret") ?? "")) {
-    return textResponse("forbidden", { status: 403 });
-  }
-
-  const { data: tasks, error } = await supabase
-    .from("tasks")
-    .select(
-      "id, prompt, task_type, session_id, sessions!inner(channel_chat_id)",
-    )
-    .not("enabled_at", "is", null)
-    .not("next_run_at", "is", null)
-    .lte("next_run_at", new Date().toISOString())
-    .eq("sessions.channel", "slack");
-  if (error) {
-    logger.error("webhook.cron.query_failed", { error });
-    return jsonResponse({ ok: false, error: error.message }, { status: 500 });
-  }
-  if (!tasks?.length) return jsonResponse({ ok: true, processed: 0 });
-
-  const results: Array<{ taskId: number; ok: boolean; error?: string }> = [];
-
-  for (const task of tasks) {
-    const joined = task.sessions as unknown as { channel_chat_id: string };
-    const threadId = joined.channel_chat_id;
-    const taskType = (task.task_type as string) || "reminder";
-    const prompt = task.prompt as string;
-
-    try {
-      await supabase.from("tasks").update({ next_run_at: null }).eq(
-        "id",
-        task.id,
-      );
-
-      const role = taskType === "agent_turn"
-        ? "user" as const
-        : "system" as const;
-      const content = taskType === "reminder" ? `Reminder: ${prompt}` : prompt;
-
-      const result = await runAgent({
-        channel: "slack",
-        channelChatId: threadId,
-        userMessage: {
-          content,
-          role,
-          channelUpdateId: `task:${task.id}:${Date.now()}`,
-        },
-      });
-
-      const channelId = threadId.split(":").slice(0, 2).join(":");
-      await bot.channel(channelId).post(result.textStream);
-
-      await updateTaskAfterRun(task.id);
-      results.push({ taskId: task.id, ok: true });
-      logger.info("webhook.cron.task_done", { taskId: task.id });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.error("webhook.cron.task_failed", { taskId: task.id, error: msg });
-      await updateTaskAfterRun(task.id);
-      results.push({ taskId: task.id, ok: false, error: msg });
-    }
-  }
-
-  return jsonResponse({ ok: true, processed: results.length, results });
-}
-
 // ── Router ──────────────────────────────────────────────────────────
 
-type Route = "trigger" | "telegram" | "slack" | "teams" | "discord" | "cron";
+type Route = "trigger" | "telegram" | "slack" | "teams" | "discord";
 const ROUTES = new Set<Route>([
   "trigger",
   "telegram",
   "slack",
   "teams",
   "discord",
-  "cron",
 ]);
 
 function routeHead(req: Request): Route | null {
@@ -502,7 +370,6 @@ Deno.serve(async (req) => {
       waitUntil: EdgeRuntime.waitUntil,
     });
   }
-  if (head === "cron") return await handleCron(req);
   logger.warn("webhook.route_not_found", { path: new URL(req.url).pathname });
   return textResponse("not found", { status: 404 });
 });

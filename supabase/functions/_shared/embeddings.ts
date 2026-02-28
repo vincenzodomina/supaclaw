@@ -1,5 +1,9 @@
 import 'supabase-edge-runtime'
 
+declare const Supabase: {
+  ai: { Session: new (model: string) => { run(input: string, options?: Record<string, unknown>): Promise<unknown> } }
+}
+
 const session = new Supabase.ai.Session('gte-small')
 
 export async function embedText(input: string): Promise<number[]> {
