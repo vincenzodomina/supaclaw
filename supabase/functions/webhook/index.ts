@@ -8,12 +8,15 @@ import { createServiceClient } from "../_shared/supabase.ts";
 import { DuplicateInboundError, runAgent } from "../_shared/agent.ts";
 import { updateTaskAfterRun } from "../_shared/tasks.ts";
 import { uploadFile } from "../_shared/storage.ts";
+import { toolDisplay } from "../_shared/tools/index.ts";
 import {
   formatBytes,
   getBearerToken,
+  getConfigBoolean,
   getConfigString,
   jsonResponse,
   mustGetEnv,
+  summarize,
   textResponse,
   timingSafeEqual,
   type VerifiedJwt,
@@ -107,6 +110,87 @@ function shouldHandleNewMessage(
   return Boolean(message.isMention);
 }
 
+function createTextStreamWithToolTelemetry(params: {
+  thread: Thread<Record<string, unknown>, unknown>;
+  fullStream: AsyncIterable<unknown>;
+  showToolCalls: boolean;
+}) {
+  const toolMsgState = new Map<
+    string,
+    {
+      sent: { edit(content: string): Promise<unknown> };
+      toolName: string;
+      args: Record<string, unknown>;
+    }
+  >();
+
+  return {
+    async *[Symbol.asyncIterator](): AsyncIterator<string> {
+      for await (const part of params.fullStream) {
+        const evt = (part && typeof part === "object")
+          ? part as Record<string, unknown>
+          : null;
+        const type = typeof evt?.type === "string" ? evt.type : "";
+
+        if (type === "text-delta") {
+          const text = typeof evt?.text === "string" ? evt.text : "";
+          if (text) yield text;
+          continue;
+        }
+
+        if (!params.showToolCalls) continue;
+
+        if (type === "tool-call") {
+          const toolName = typeof evt?.toolName === "string"
+            ? evt.toolName
+            : "tool";
+          const toolCallId = typeof evt?.toolCallId === "string"
+            ? evt.toolCallId
+            : crypto.randomUUID();
+          const args = (evt?.input && typeof evt.input === "object")
+            ? (evt.input as Record<string, unknown>)
+            : {};
+
+          const startText = toolDisplay(toolName, args, null) ??
+            summarize(args);
+          try {
+            const sent = await params.thread.post(
+              `⚙️ ${toolName} ${startText}`,
+            ) as unknown as {
+              edit(content: string): Promise<unknown>;
+            };
+            toolMsgState.set(toolCallId, { sent, toolName, args });
+          } catch (error) {
+            logger.warn("tool-call.post_failed", { toolName, error });
+          }
+          continue;
+        }
+
+        if (type === "tool-result") {
+          const toolCallId = typeof evt?.toolCallId === "string"
+            ? evt.toolCallId
+            : "";
+          const state = toolMsgState.get(toolCallId);
+          if (!state) continue;
+
+          const output = evt?.output;
+          const doneText = toolDisplay(state.toolName, state.args, output) ??
+            summarize(output);
+          try {
+            await state.sent.edit(`✅ ${state.toolName} ${doneText}`);
+          } catch (error) {
+            logger.warn("tool-call.edit_failed", {
+              toolName: state.toolName,
+              error,
+            });
+          }
+          continue;
+        }
+      }
+    },
+  };
+}
+
 async function handleMessage(
   thread: Thread<Record<string, unknown>, unknown>,
   message: Message<unknown>,
@@ -161,6 +245,31 @@ async function handleMessage(
         fileId,
       },
     });
+
+    const showToolCalls = channel === "telegram" &&
+      getConfigBoolean("channels.telegram.show_tool_calls") === true;
+
+    if (channel === "telegram") {
+      const stream = createTextStreamWithToolTelemetry({
+        thread,
+        fullStream: result.fullStream,
+        showToolCalls,
+      });
+
+      // Chat SDK fallback streaming posts an initial "..." placeholder on Telegram.
+      // Workaround: delete the streamed message after completion and repost final text
+      // so it appears after any tool telemetry messages.
+      const sent = await thread.post(stream);
+      const finalText = (sent.text ?? "").trim();
+
+      if (showToolCalls && finalText) {
+        await sent.delete().catch(() => {});
+        await thread.post(finalText);
+      }
+      return;
+    }
+
+    // Other channels: keep native streaming behavior.
     await thread.post(result.textStream);
   } catch (err) {
     if (err instanceof DuplicateInboundError) return;
