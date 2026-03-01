@@ -10,7 +10,8 @@ import { embedText } from "../_shared/embeddings.ts";
 import { updateTaskAfterRun } from "../_shared/tasks.ts";
 import { createChatBot } from "../_shared/bot.ts";
 import { runAgent } from "../_shared/agent.ts";
-import type { Database, Json } from "../_shared/database.types.ts";
+import type { Database, Json, Tables } from "../_shared/database.types.ts";
+type SessionRow = Tables<"sessions">;
 
 type JobRow = Database["public"]["Functions"]["claim_jobs"]["Returns"][number];
 type RunTaskType = "reminder" | "agent_turn";
@@ -113,7 +114,7 @@ async function processRunTask(job: JobRow) {
   if (sessErr) throw new Error(`Failed to load session: ${sessErr.message}`);
   if (!session) throw new Error(`Session not found: ${sessionId}`);
 
-  const channel = String(session.channel ?? "").trim();
+  const channel = String(session.channel ?? "").trim() as SessionRow["channel"];
   const threadId = normalizeThreadId(channel, session.channel_chat_id);
   if (!channel || !threadId) {
     throw new Error("Session is missing channel or channel_chat_id");
