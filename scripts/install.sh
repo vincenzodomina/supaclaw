@@ -17,6 +17,8 @@ set -euo pipefail
 #
 # Usage:
 #   ./scripts/install.sh
+#   ./scripts/install.sh --dev   # fastlane dev defaults (skip most prompts)
+#   ./scripts/install.sh --help
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -27,6 +29,36 @@ WEBHOOK_SCRIPT="${REPO_ROOT}/scripts/set-local-telegram-webhook.sh"
 NGROK_HELPER="${REPO_ROOT}/scripts/ngrok-helper.sh"
 AGENTS_SEED_SCRIPT="${REPO_ROOT}/scripts/seed-agents-storage.sh"
 SOURCE_SEED_SCRIPT="${REPO_ROOT}/scripts/seed-source-code.sh"
+GITHUB_SOURCE_URL_DEFAULT="https://github.com/vincenzodomina/supaclaw"
+
+DEV_MODE="false"
+
+print_help() {
+  cat <<EOF
+Usage:
+  ./scripts/install.sh [--dev]
+
+Options:
+  --dev     Fastlane dev defaults (skip most prompts).
+  -h, --help  Show this help.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dev)
+      DEV_MODE="true"
+      shift
+      ;;
+    -h|--help)
+      print_help
+      exit 0
+      ;;
+    *)
+      die "Unknown argument: $1 (use --help)"
+      ;;
+  esac
+done
 
 if [[ ! -f "${NGROK_HELPER}" ]]; then
   printf "[install][error] Missing ngrok helper script: %s\n" "${NGROK_HELPER}" >&2
@@ -225,13 +257,17 @@ fi
 
 log "Step 2/10 - Starting Supabase local services"
 if [[ "${SUPABASE_ALREADY_RUNNING}" == "true" ]]; then
-  if ask_yes_no "Supabase appears already running. Run 'supabase start' again?" "n"; then
+  if [[ "${DEV_MODE}" == "true" ]]; then
+    hint "Skipping 'supabase start' because services are already up. (--dev)"
+  elif ask_yes_no "Supabase appears already running. Run 'supabase start' again?" "n"; then
     supabase start
   else
     hint "Skipping 'supabase start' because services are already up."
   fi
 else
-  if ask_yes_no "Start Supabase local services now?" "y"; then
+  if [[ "${DEV_MODE}" == "true" ]]; then
+    supabase start
+  elif ask_yes_no "Start Supabase local services now?" "y"; then
     supabase start
   else
     die "Supabase must be running for the next steps. Re-run and start services."
@@ -253,7 +289,12 @@ if [[ -f "${ENV_LOCAL}" ]]; then
   env_prompt="Configure supabase/.env.local now? (existing file detected)"
 fi
 
-if ask_yes_no "${env_prompt}" "${env_default}"; then
+if [[ "${DEV_MODE}" == "true" ]]; then
+  if [[ ! -f "${ENV_LOCAL}" ]]; then
+    die "supabase/.env.local is missing; cannot skip env setup in --dev mode."
+  fi
+  hint "Skipping supabase/.env.local setup (--dev; using existing file)."
+elif ask_yes_no "${env_prompt}" "${env_default}"; then
   if [[ ! -f "${ENV_LOCAL}" ]]; then
     cp "${ENV_EXAMPLE}" "${ENV_LOCAL}"
     printf "[install] Created %s from template.\n" "${ENV_LOCAL}"
@@ -299,13 +340,19 @@ bash "${AGENTS_SEED_SCRIPT}" \
   --workspace-bucket "${WORKSPACE_BUCKET_VALUE}"
 
 log "Step 6/10 - Optional: Seed project source code from GitHub to Supabase Storage"
-if ask_yes_no "Seed project source code from a GitHub repo into storage?" "n"; then
-  GITHUB_SOURCE_URL=""
-  read -r -p "GitHub repo URL [https://github.com/vincenzodomina/supaclaw]: " GITHUB_SOURCE_URL
-  GITHUB_SOURCE_URL="${GITHUB_SOURCE_URL:-https://github.com/vincenzodomina/supaclaw}"
-  bash "${SOURCE_SEED_SCRIPT}" "${GITHUB_SOURCE_URL}" \
+if [[ "${DEV_MODE}" == "true" ]]; then
+  bash "${SOURCE_SEED_SCRIPT}" "${GITHUB_SOURCE_URL_DEFAULT}" \
     --env-file "${ENV_LOCAL}" \
     --workspace-bucket "${WORKSPACE_BUCKET_VALUE}"
+else
+  if ask_yes_no "Seed project source code from a GitHub repo into storage?" "n"; then
+    GITHUB_SOURCE_URL=""
+    read -r -p "GitHub repo URL [${GITHUB_SOURCE_URL_DEFAULT}]: " GITHUB_SOURCE_URL
+    GITHUB_SOURCE_URL="${GITHUB_SOURCE_URL:-${GITHUB_SOURCE_URL_DEFAULT}}"
+    bash "${SOURCE_SEED_SCRIPT}" "${GITHUB_SOURCE_URL}" \
+      --env-file "${ENV_LOCAL}" \
+      --workspace-bucket "${WORKSPACE_BUCKET_VALUE}"
+  fi
 fi
 
 log "Step 7/10 - Installing Deno dependencies for edge functions"
@@ -313,7 +360,9 @@ log "Step 7/10 - Installing Deno dependencies for edge functions"
 
 log "Step 8/10 - Optional: Deploy local Vault secrets"
 if [[ -x "${VAULT_SCRIPT}" ]]; then
-  if ask_yes_no "Run Vault secret deployment now?" "y"; then
+  if [[ "${DEV_MODE}" == "true" ]]; then
+    "${VAULT_SCRIPT}"
+  elif ask_yes_no "Run Vault secret deployment now?" "y"; then
     "${VAULT_SCRIPT}"
   fi
 else
@@ -322,13 +371,17 @@ fi
 
 log "Step 9/10 - Optional: Configure Telegram webhook (ngrok)"
 if [[ -x "${WEBHOOK_SCRIPT}" ]]; then
-  webhook_default="n"
-  webhook_prompt="Run Telegram webhook helper now?"
-  if [[ -n "${NGROK_TUNNEL_URL}" ]]; then
-    webhook_prompt="Run Telegram webhook helper now? (ngrok already detected)"
-  fi
-  if ask_yes_no "${webhook_prompt}" "${webhook_default}"; then
-    "${WEBHOOK_SCRIPT}"
+  if [[ "${DEV_MODE}" == "true" ]]; then
+    hint "Skipping Telegram webhook helper (--dev)."
+  else
+    webhook_default="n"
+    webhook_prompt="Run Telegram webhook helper now?"
+    if [[ -n "${NGROK_TUNNEL_URL}" ]]; then
+      webhook_prompt="Run Telegram webhook helper now? (ngrok already detected)"
+    fi
+    if ask_yes_no "${webhook_prompt}" "${webhook_default}"; then
+      "${WEBHOOK_SCRIPT}"
+    fi
   fi
 else
   warn "Webhook helper script is missing or not executable: ${WEBHOOK_SCRIPT}"
@@ -341,7 +394,16 @@ if [[ "${FUNCTIONS_ALREADY_RUNNING}" == "true" ]]; then
   functions_default="n"
   functions_prompt="Start supabase functions serve now? (Already detected running in another terminal)"
 fi
-if ask_yes_no "${functions_prompt}" "${functions_default}"; then
+if [[ "${DEV_MODE}" == "true" ]]; then
+  if [[ "${FUNCTIONS_ALREADY_RUNNING}" == "true" ]]; then
+    hint "Skipping 'supabase functions serve' because it is already running. (--dev)"
+    printf "\n[install] Setup completed!\n"
+  else
+    supabase functions serve \
+      --env-file "supabase/.env.local" \
+      --no-verify-jwt
+  fi
+elif ask_yes_no "${functions_prompt}" "${functions_default}"; then
   supabase functions serve \
     --env-file "supabase/.env.local" \
     --no-verify-jwt
