@@ -2,7 +2,7 @@ import { jsonSchema, tool } from "ai";
 import { embedText } from "../embeddings.ts";
 import { logger } from "../logger.ts";
 import { createServiceClient } from "../supabase.ts";
-import type { Database, Tables } from "../database.types.ts";
+import type { Tables } from "../database.types.ts";
 
 const supabase = createServiceClient();
 
@@ -179,7 +179,8 @@ export function createMemorySearchTool(sessionId: string) {
           throw new Error(`hybrid_search failed: ${error.message}`);
         }
 
-        const rows: MemoryRow[] = (data as Database["public"]["Functions"]["hybrid_search"]["Returns"])?.memories ?? [];
+        const rows: MemoryRow[] =
+          (data as { memories: MemoryRow[] })?.memories ?? [];
         const selected = scope === "auto"
           ? selectAutoScopedMemories({
             rows,
