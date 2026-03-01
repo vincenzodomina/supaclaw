@@ -246,34 +246,48 @@ if [[ ! -f "${ENV_EXAMPLE}" ]]; then
   die "Missing ${ENV_EXAMPLE}"
 fi
 
-if [[ ! -f "${ENV_LOCAL}" ]]; then
-  cp "${ENV_EXAMPLE}" "${ENV_LOCAL}"
-  printf "[install] Created %s from template.\n" "${ENV_LOCAL}"
+env_default="y"
+env_prompt="Configure supabase/.env.local now?"
+if [[ -f "${ENV_LOCAL}" ]]; then
+  env_default="n"
+  env_prompt="Configure supabase/.env.local now? (existing file detected)"
 fi
 
-prompt_env_var "SUPABASE_URL" "Supabase API URL used by local edge functions." "true" "false" "http://127.0.0.1:54321"
-prompt_env_var "SUPABASE_SERVICE_ROLE_KEY" "Service role key (required by workers/functions)." "true" "true"
-prompt_env_var "TELEGRAM_BOT_TOKEN" "Telegram bot token from BotFather." "true" "true"
-prompt_env_var "TELEGRAM_ALLOWED_USER_ID" "Telegram user id allowed to use the bot." "true" "false"
-prompt_env_var "TELEGRAM_WEBHOOK_SECRET" "Webhook verification secret (generate with openssl rand -hex 32)." "true" "true"
-prompt_env_var "WORKER_SECRET" "Worker secret for scheduled cron invocations." "true" "true"
-prompt_env_var "TRIGGER_WEBHOOK_SECRET" "Optional external trigger secret." "false" "true"
-prompt_env_var "WORKSPACE_BUCKET" "Workspace bucket name." "false" "false" "workspace"
+if ask_yes_no "${env_prompt}" "${env_default}"; then
+  if [[ ! -f "${ENV_LOCAL}" ]]; then
+    cp "${ENV_EXAMPLE}" "${ENV_LOCAL}"
+    printf "[install] Created %s from template.\n" "${ENV_LOCAL}"
+  fi
 
-if ask_yes_no "Configure OpenAI provider variables now?" "y"; then
-  prompt_env_var "OPENAI_API_KEY" "OpenAI API key." "true" "true"
-  prompt_env_var "OPENAI_MODEL" "OpenAI model id." "true" "false" "gpt-4.1"
-fi
+  prompt_env_var "SUPABASE_URL" "Supabase API URL used by local edge functions." "true" "false" "http://127.0.0.1:54321"
+  prompt_env_var "SUPABASE_SERVICE_ROLE_KEY" "Service role key (required by workers/functions)." "true" "true"
+  prompt_env_var "TELEGRAM_BOT_TOKEN" "Telegram bot token from BotFather." "true" "true"
+  prompt_env_var "TELEGRAM_ALLOWED_USER_ID" "Telegram user id allowed to use the bot." "true" "false"
+  prompt_env_var "TELEGRAM_WEBHOOK_SECRET" "Webhook verification secret (generate with openssl rand -hex 32)." "true" "true"
+  prompt_env_var "WORKER_SECRET" "Worker secret for scheduled cron invocations." "true" "true"
+  prompt_env_var "TRIGGER_WEBHOOK_SECRET" "Optional external trigger secret." "false" "true"
+  prompt_env_var "WORKSPACE_BUCKET" "Workspace bucket name." "false" "false" "workspace"
 
-if ask_yes_no "Configure Anthropic provider variables now?" "n"; then
-  prompt_env_var "ANTHROPIC_API_KEY" "Anthropic API key." "true" "true"
-  prompt_env_var "ANTHROPIC_MODEL" "Anthropic model id." "true" "false" "claude-3-5-sonnet-latest"
-fi
+  if ask_yes_no "Configure OpenAI provider variables now?" "y"; then
+    prompt_env_var "OPENAI_API_KEY" "OpenAI API key." "true" "true"
+    prompt_env_var "OPENAI_MODEL" "OpenAI model id." "true" "false" "gpt-4.1"
+  fi
 
-if ask_yes_no "Configure AWS Bedrock provider variables now?" "n"; then
-  prompt_env_var "AWS_BEDROCK_ACCESS_KEY" "AWS Bedrock access key (from IAM console)." "true" "true"
-  prompt_env_var "AWS_BEDROCK_SECRET_ACCESS_KEY" "AWS Bedrock secret access key." "true" "true"
-  prompt_env_var "AWS_REGION" "AWS region for Bedrock." "true" "false" "us-east-1"
+  if ask_yes_no "Configure Anthropic provider variables now?" "n"; then
+    prompt_env_var "ANTHROPIC_API_KEY" "Anthropic API key." "true" "true"
+    prompt_env_var "ANTHROPIC_MODEL" "Anthropic model id." "true" "false" "claude-3-5-sonnet-latest"
+  fi
+
+  if ask_yes_no "Configure AWS Bedrock provider variables now?" "n"; then
+    prompt_env_var "AWS_BEDROCK_ACCESS_KEY" "AWS Bedrock access key (from IAM console)." "true" "true"
+    prompt_env_var "AWS_BEDROCK_SECRET_ACCESS_KEY" "AWS Bedrock secret access key." "true" "true"
+    prompt_env_var "AWS_REGION" "AWS region for Bedrock." "true" "false" "us-east-1"
+  fi
+else
+  if [[ ! -f "${ENV_LOCAL}" ]]; then
+    die "supabase/.env.local is missing; cannot skip env setup."
+  fi
+  hint "Skipping supabase/.env.local setup (using existing file)."
 fi
 
 log "Step 5/10 - Seeding workspace .agents files to Supabase Storage"
