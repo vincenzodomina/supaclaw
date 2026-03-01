@@ -6,6 +6,8 @@
   "llms.agent.provider": "openai",
   "llms.embedding.model": "gte-small",
   "llms.embedding.provider": "supabase",
+  "llms.ocr.model": "gemini-3-flash",
+  "llms.ocr.provider": "google",
   "tools.web_fetch.include_query": false,
   "tools.web_fetch.allowlist": "",
   "tools.web_fetch.denylist": "",

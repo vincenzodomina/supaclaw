@@ -26,6 +26,36 @@ const supabase = createServiceClient();
 
 const { bot, adapters } = createChatBot();
 
+async function ensureSessionId(params: {
+  channel: Tables<"sessions">["channel"];
+  channelChatId: string;
+}): Promise<string> {
+  const { data: session, error } = await supabase
+    .from("sessions")
+    .upsert(
+      {
+        channel: params.channel,
+        channel_chat_id: params.channelChatId,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "channel,channel_chat_id" },
+    )
+    .select("id")
+    .single();
+  if (error || !session) {
+    throw new Error(`Session upsert failed: ${error?.message}`);
+  }
+  return session.id;
+}
+
+async function enqueueFileProcessing(fileId: string) {
+  const { error } = await supabase.rpc("queue_send", {
+    p_msg: { type: "process_file", file_id: fileId },
+    p_delay: 0,
+  });
+  if (error) throw new Error(`queue_send failed: ${error.message}`);
+}
+
 // ── Unified message handler for all channels ────────────────────────
 
 function channelOf(threadId: string): string {
@@ -149,6 +179,8 @@ async function handleMessage(
 
   if (message.attachments?.length) {
     const attachmentDescriptions: string[] = [];
+    const processingEnqueues: Array<Promise<unknown>> = [];
+    const sessionId = await ensureSessionId({ channel, channelChatId: thread.id });
 
     for (const [index, attachment] of message.attachments.entries()) {
       const att = attachment as Attachment;
@@ -169,17 +201,72 @@ async function handleMessage(
         name: att.name,
         mimeType: att.mimeType,
       });
-      if (!fileId) fileId = file.id;
 
       const meta = [att.name ?? "file"];
       if (att.mimeType) meta.push(att.mimeType);
       if (att.size) meta.push(formatBytes(att.size));
-      attachmentDescriptions.push(`[File: ${meta.join(", ")}] → ${objectPath}`);
+      const desc = `[File: ${meta.join(", ")}] → ${objectPath}`;
+      attachmentDescriptions.push(desc);
+
+      // Persist attachment reference as its own timeline row (one per file).
+      // This makes every attachment visible across subsequent turns (not just the first).
+      const now = new Date().toISOString();
+      {
+        const { error } = await supabase.from("messages").insert({
+          session_id: sessionId,
+          role: "user",
+          type: "file",
+          content: desc,
+          file_id: file.id,
+          channel_update_id: `${message.id}:att:${index}`,
+          channel_message_id: message.id,
+          channel_chat_id: thread.id,
+          channel_from_user_id: message.author.userId,
+          updated_at: now,
+        });
+        if (error && error.code !== "23505") {
+          logger.warn("webhook.attachment_message.insert_failed", { error });
+        }
+      }
+
+      // Set a helpful one-liner immediately; pipeline will overwrite on success.
+      {
+        const { error } = await supabase.from("files").update({
+          content: `${att.name ?? "file"}${
+            att.mimeType ? ` (${att.mimeType})` : ""
+          } uploaded → ${objectPath} (text: ${objectPath}/full.txt)`,
+          processing_status: "pending",
+          processed_at: null,
+          page_count: null,
+          last_error: null,
+          updated_at: now,
+        }).eq("id", file.id);
+        if (error) {
+          logger.warn("webhook.file_row.update_failed", {
+            fileId: file.id,
+            error,
+          });
+        }
+      }
+
+      processingEnqueues.push(
+        enqueueFileProcessing(file.id).catch((error) => {
+          logger.error("webhook.file_processing.enqueue_failed", {
+            fileId: file.id,
+            objectPath,
+            error,
+          });
+        }),
+      );
     }
 
     if (attachmentDescriptions.length) {
       const attachmentsText = attachmentDescriptions.join("\n");
       content = content ? `${attachmentsText}\n${content}` : attachmentsText;
+    }
+
+    if (processingEnqueues.length) {
+      EdgeRuntime.waitUntil(Promise.all(processingEnqueues));
     }
   }
 
@@ -194,7 +281,6 @@ async function handleMessage(
         channelUpdateId: message.id,
         channelMessageId: message.id,
         channelFromUserId: message.author.userId,
-        fileId,
       },
     });
 

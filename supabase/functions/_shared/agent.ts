@@ -44,7 +44,7 @@ function writeTrace(sessionId: string, trace: Record<string, unknown>) {
   ).catch((err) => logger.warn("agent.trace.upload_failed", { error: err }));
 }
 
-function resolveProviderModel(provider: LLMProvider, model?: string) {
+export function resolveProviderModel(provider: LLMProvider, model?: string) {
   const resolvedModel = model || DEFAULT_MODELS[provider];
   switch (provider) {
     case "openai": {

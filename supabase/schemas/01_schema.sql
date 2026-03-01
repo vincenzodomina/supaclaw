@@ -18,6 +18,7 @@ create type enum_message_type as enum ('text', 'tool-call', 'file');
 create type enum_message_tool_status as enum ('started', 'succeeded', 'failed');
 create type enum_memory_type as enum ('summary', 'pinned_fact', 'note');
 create type enum_schedule_type as enum ('once', 'recurring');
+create type enum_file_processing_status as enum ('pending', 'processing', 'succeeded', 'failed', 'skipped');
 
 -- Tables
 create table if not exists sessions (
@@ -39,6 +40,11 @@ create table if not exists files (
   mime_type text,
   name text not null,
   content text not null default '',
+  -- File processing pipeline state (OCR/page artifacts)
+  processing_status enum_file_processing_status not null default 'pending',
+  processed_at timestamptz,
+  page_count int,
+  last_error text,
   -- Full-text search
   fts tsvector generated always as (to_tsvector('english', name || E'\n\n' || content)) stored,
   -- Vector search (384 dims for gte-small)

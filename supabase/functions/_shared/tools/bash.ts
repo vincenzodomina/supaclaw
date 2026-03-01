@@ -3,7 +3,8 @@ import { Bash, defineCommand, type CommandName } from "just-bash";
 import { getConfigBoolean, getConfigNumber, getConfigString } from "../helpers.ts";
 import { logger } from "../logger.ts";
 import {
-  downloadTextFromWorkspace,
+  decodeUtf8,
+  downloadFile,
   listWorkspaceObjects,
   sanitizeObjectPath,
   sanitizeObjectPrefix,
@@ -534,11 +535,11 @@ async function createShell(params: {
     const vpath = toVirtualPath(p);
     const workspacePath = p;
     initialFiles[vpath] = async () => {
-      const content = await downloadTextFromWorkspace(workspacePath, { optional: true });
-      if (content === null) {
+      const file = await downloadFile(workspacePath, { optional: true });
+      if (file === null) {
         throw new Error(`Workspace file not found: ${workspacePath}`);
       }
-      return content;
+      return decodeUtf8(file);
     };
   }
 
