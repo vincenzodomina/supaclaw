@@ -4,7 +4,10 @@ import type { TablesUpdate } from "./database.types.ts";
 
 const supabase = createServiceClient();
 
-export async function updateTaskAfterRun(taskId: number) {
+export async function updateTaskAfterRun(
+  taskId: number,
+  queueMsgId?: string,
+) {
   const { data: task, error } = await supabase
     .from("tasks")
     .select("schedule_type, cron_expr, timezone, run_count")
@@ -16,6 +19,9 @@ export async function updateTaskAfterRun(taskId: number) {
     last_run_at: new Date().toISOString(),
     run_count: task.run_count + 1,
     last_error: null,
+    ...(typeof queueMsgId === "string" && queueMsgId.trim()
+      ? { last_processed_queue_msg_id: queueMsgId.trim() }
+      : {}),
     updated_at: new Date().toISOString(),
   };
 

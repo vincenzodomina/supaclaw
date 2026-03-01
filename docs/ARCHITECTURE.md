@@ -21,7 +21,7 @@ This document explains how SupaClaw works under the hood and how it differs from
 │  │             │  │              │  │          │  │
 │  │ • sessions  │  │ • workspace  │  │ • users  │  │
 │  │ • messages  │  │   /.agents/**│  │ • tokens │  │
-│  │ • jobs      │  │   /files/**  │  │          │  │
+│  │ • pgmq jobs │  │   /files/**  │  │          │  │
 │  │ • tasks     │  │              │  │          │  │
 │  └─────────────┘  └──────────────┘  └──────────┘  │
 │                                                   │
@@ -54,7 +54,7 @@ This document explains how SupaClaw works under the hood and how it differs from
 
 SupaClaw uses a hybrid processing model:
 - **Chat messages process inline** — the webhook calls the agent directly and streams the reply to the channel provider. No job queue in the chat path; latency stays low, code stays simple.
-- **Background work uses a DB job queue** — embeddings, scheduled tasks, and external triggers are enqueued as jobs. A cron-driven worker processes them with retries and backoff.
+- **Background work uses Supabase Queues (PGMQ)** — embeddings, scheduled tasks, and external triggers are enqueued into the `jobs` queue. A cron-driven worker pulls messages and deletes them on success (visibility timeout handles retries).
 
 Fast chat without a queue hop, plus durable retry semantics for background work that can fail.
 
@@ -62,7 +62,7 @@ The worker only calls the LLM when there are due jobs, so cron acts as a minimal
 
 ### Confirmed decisions (what we're building)
 - Inline chat: webhook processes messages directly (agent call + stream reply) using `EdgeRuntime.waitUntil()` for async background execution.
-- Background queue: embeddings, scheduled tasks, and triggers go through the `jobs` table with retry/backoff.
+- Background queue: embeddings, scheduled tasks, and triggers go through Supabase Queues (PGMQ) queue `jobs` (visibility timeout retries; delete = ack).
 - Always-on (like): Event-driven for chat + cron for scheduled tasks + minimal "heartbeat" (only checks for due jobs, no "think loop").
 - Sessions: 1 Telegram chat = 1 session (groups = multiple sessions), but only your Telegram user ID is allowed.
 - No commands in Telegram (yet).
@@ -76,7 +76,7 @@ The worker only calls the LLM when there are due jobs, so cron acts as a minimal
 - **Postgres (source of truth)**
   - `sessions`: one per conversation surface (Telegram chat)
   - `messages`: all inbound/outbound messages (append-only)
-  - `jobs`: queued units of work (run task, embed, trigger) — dedupe keys prevent duplicates, attempt tracking enables retries with backoff, rows are inspectable for debugging
+  - `pgmq` queue `jobs`: queued units of work (run task, embed, trigger) — messages are durable in Postgres, claimed via visibility timeout, acknowledged by deletion
   - `tasks`: scheduled task definitions (one-shot reminders, recurring cron jobs, or unscheduled backlog items)
   - `memories`: store/read/search tools to manage context across sessions
   - `files`: metadata, vectors, relation to messages
@@ -296,7 +296,7 @@ Dataflow + Persistence:
 | **Storage** | Local SQLite + filesystem | Supabase Storage + PostgreSQL |
 | **Cron** | Custom in-process scheduler (2000+ lines) | pg_cron + `tasks` table + `enqueue_due_tasks()` SQL function |
 | **Chat Processing** | Built-in agent loop | Inline in webhook via `EdgeRuntime.waitUntil()` |
-| **Background Jobs** | Built-in | DB job queue (`jobs` table) + cron-driven worker |
+| **Background Jobs** | Built-in | Supabase Queues (PGMQ) queue `jobs` + cron-driven worker |
 | **Files** | Local filesystem | Supabase Storage buckets |
 | **Config** | Local YAML | Supabase DB + env vars |
 | **Session State** | In-memory + SQLite | PostgreSQL |
