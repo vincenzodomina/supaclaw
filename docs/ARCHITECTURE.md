@@ -122,7 +122,7 @@ The worker only calls the LLM when there are due jobs, so cron acts as a minimal
 
 
 
-## Data Flow
+## Data Flows
 
 ### Message Processing Flow
 
@@ -170,13 +170,16 @@ The worker only calls the LLM when there are due jobs, so cron acts as a minimal
 1. pg_cron triggers scheduled query (every minute)
    │
    ▼
-2. Checks due tasks table and enqueues a job to run task
+2. `enqueue_due_tasks()` selects due `tasks` (`next_run_at <= now()`), enqueues `job(type="run_task")`, and clears `next_run_at` (prevents double-fire)
    │
    ▼
 3. pg_net makes HTTP POST to `/functions/v1/agent-worker`
    │
    ▼
-4. `agent-worker` claims jobs and exits fast if no jobs are due
+4. `agent-worker` claims queued jobs and runs the agent with an injected “scheduled task” header + the task `prompt`. Runs are isolated by default.
+   │
+   ▼
+5. On success: recurring tasks recompute `next_run_at`; one-shot tasks set `completed_at`
 ```
 
 ## Tools
@@ -206,9 +209,9 @@ The worker only calls the LLM when there are due jobs, so cron acts as a minimal
     - Postgres-only: backed by `hybrid_search` over the `memories` table (FTS + pgvector); no local filesystem / no SQLite.
     - Defaults + knobs: `scope=auto` (global pinned facts + current-session summaries); supports `scope=current|all`, `types`, `max_results`, `match_count` (all clamped).
 - **`cron`**
-    - Let the agent manage reminders and scheduled jobs via the `tasks` table.
-    - Actions: `list|add|update|remove`; `list` excludes disabled tasks by default.
-    - Scheduling: `once` requires `run_at` (ISO-8601); `recurring` requires a 5-field `cron_expr` + optional IANA `timezone` (default `UTC`) and computes/updates `next_run_at`. `prompt` is the runtime input.
+    - Let the agent manage scheduled agent runs via the `tasks` table.
+    - Actions: `list|add|update|remove`; `list` excludes disabled and completed tasks by default.
+    - Scheduling: `once` requires `run_at` (ISO-8601); `recurring` requires a 5-field `cron_expr` + optional IANA `timezone` (default `UTC`) and computes/updates `next_run_at`. `prompt` is the runtime input passed to the scheduled agent run.
 - **`bash`**
     - Sandboxed Unix-like shell powered by [just-bash](https://github.com/nichochar/just-bash) — runs entirely in-process as a JS interpreter. No host OS shell, no child processes, no `execve`, for text/file processing beyond what `edit_file` or `web_fetch` cover (JSON wrangling, diffing, bulk transforms, piped commands)
     - Virtual Filesystem: Workspace files are imported on demand and explicitly exported back to Supabase Storage;
