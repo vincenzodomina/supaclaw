@@ -1,6 +1,7 @@
 import { jsonSchema, tool } from "ai";
 import { Cron } from "croner";
 import { createServiceClient } from "../supabase.ts";
+import type { TablesUpdate } from "../database.types.ts";
 
 const supabase = createServiceClient();
 
@@ -84,7 +85,7 @@ async function updateTask(args: CronArgs) {
   if (loadErr) throw new Error(loadErr.message);
   if (!existing) throw new Error("Task not found");
 
-  const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  const patch: TablesUpdate<"tasks"> = { updated_at: new Date().toISOString() };
 
   if (args.name !== undefined) patch.name = args.name.trim();
   if (args.description !== undefined) patch.description = args.description?.trim() || null;

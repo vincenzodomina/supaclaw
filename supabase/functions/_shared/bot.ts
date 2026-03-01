@@ -61,6 +61,7 @@ export function createChatBot(): { bot: Chat; adapters: Record<string, Adapter> 
     userName: getConfigString("agent.name") ?? "supaclaw",
     adapters,
     state: createMemoryState(),
+    //fallbackStreamingPlaceholderText: null,
   });
 
   return { bot, adapters };

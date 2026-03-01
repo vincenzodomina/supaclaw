@@ -8,3 +8,12 @@ supabase gen types typescript --local > supabase/functions/_shared/database.type
 # or remote project:
 # supabase gen types typescript --project-id <project-ref> > supabase/functions/_shared/database.types.ts
 ```
+
+Use the generated `Database` type directly in functions (instead of handwritten table interfaces), e.g.:
+
+```ts
+import type { Database, Tables } from "../_shared/database.types.ts";
+
+type SessionRow = Database["public"]["Tables"]["sessions"]["Row"];
+type MessageRow = Tables["messages"];
+```

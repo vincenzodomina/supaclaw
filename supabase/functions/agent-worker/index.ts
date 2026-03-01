@@ -10,12 +10,10 @@ import { embedText } from "../_shared/embeddings.ts";
 import { updateTaskAfterRun } from "../_shared/tasks.ts";
 import { createChatBot } from "../_shared/bot.ts";
 import { runAgent } from "../_shared/agent.ts";
+import type { Database, Json } from "../_shared/database.types.ts";
 
-type JobRow = {
-  id: number;
-  type: string;
-  payload: Record<string, unknown>;
-};
+type JobRow = Database["public"]["Functions"]["claim_jobs"]["Returns"][number];
+type RunTaskType = "reminder" | "agent_turn";
 
 const supabase = createServiceClient();
 const { bot, adapters } = createChatBot();
@@ -56,7 +54,7 @@ async function claimJobs(workerId: string, maxJobs = 3): Promise<JobRow[]> {
     p_lock_timeout_seconds: 300,
   });
   if (error) throw new Error(`claim_jobs failed: ${error.message}`);
-  const jobs = (data ?? []) as JobRow[];
+  const jobs: JobRow[] = data ?? [];
   logger.info("jobs.claim.done", { workerId, claimed: jobs.length });
   return jobs;
 }
@@ -80,14 +78,30 @@ async function jobFail(
 }
 
 async function processRunTask(job: JobRow) {
-  const taskId = job.payload.task_id as number;
-  const prompt = job.payload.prompt as string;
-  const sessionId = job.payload.session_id as string;
-  const taskType = (job.payload.task_type as string) || "reminder";
-
-  if (!taskId || !prompt || !sessionId) {
+  if (
+    typeof job.payload !== "object" || job.payload === null ||
+    Array.isArray(job.payload)
+  ) {
     throw new Error("Invalid run_task payload");
   }
+
+  const payload = job.payload as Record<string, Json>;
+  const taskId = payload.task_id;
+  const prompt = payload.prompt;
+  const sessionId = payload.session_id;
+  const rawTaskType = payload.task_type;
+
+  if (
+    typeof taskId !== "number" || !Number.isFinite(taskId) ||
+    typeof prompt !== "string" || !prompt.trim() ||
+    typeof sessionId !== "string" || !sessionId.trim()
+  ) {
+    throw new Error("Invalid run_task payload");
+  }
+
+  const taskType: RunTaskType = rawTaskType === "agent_turn"
+    ? "agent_turn"
+    : "reminder";
 
   logger.info("job.run_task.start", { jobId: job.id, taskId, taskType });
 
@@ -157,8 +171,19 @@ async function processEmbed(job: JobRow, config: EmbedConfig) {
     type: job.type,
     table: config.table,
   });
-  const id = job.payload[config.idKey];
-  if (!id) throw new Error(`Invalid ${job.type} payload`);
+  if (
+    typeof job.payload !== "object" || job.payload === null ||
+    Array.isArray(job.payload)
+  ) {
+    throw new Error(`Invalid ${job.type} payload`);
+  }
+
+  const payload = job.payload as Record<string, Json>;
+  const rawId = payload[config.idKey];
+  const id = config.idKey === "file_id"
+    ? (typeof rawId === "string" && rawId.trim() ? rawId : null)
+    : (typeof rawId === "number" && Number.isFinite(rawId) ? rawId : null);
+  if (id == null) throw new Error(`Invalid ${job.type} payload`);
 
   const { data: row, error: loadErr } = await supabase
     .from(config.table)
@@ -175,7 +200,7 @@ async function processEmbed(job: JobRow, config: EmbedConfig) {
   const { error: updateErr } = await supabase
     .from(config.table)
     .update({
-      embedding,
+      embedding: JSON.stringify(embedding),
       updated_at: new Date().toISOString(),
     })
     .eq("id", id);

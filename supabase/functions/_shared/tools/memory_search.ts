@@ -2,6 +2,7 @@ import { jsonSchema, tool } from "ai";
 import { embedText } from "../embeddings.ts";
 import { logger } from "../logger.ts";
 import { createServiceClient } from "../supabase.ts";
+import type { Database, Tables } from "../database.types.ts";
 
 const supabase = createServiceClient();
 
@@ -19,17 +20,21 @@ type MemorySearchArgs = {
   scope?: MemoryScope;
 };
 
-type MemoryRow = {
-  id: number;
-  session_id: string | null;
-  type: MemoryType;
-  content: string;
-  score: number;
-  priority: number | null;
-  metadata: Record<string, unknown> | null;
-  created_at: string;
-  updated_at: string;
-};
+type MemoryRow =
+  & Pick<
+    Tables<"memories">,
+    | "id"
+    | "session_id"
+    | "content"
+    | "priority"
+    | "metadata"
+    | "created_at"
+    | "updated_at"
+  >
+  & {
+    type: MemoryType;
+    score: number;
+  };
 
 function clampInt(
   value: number | undefined,
@@ -74,13 +79,13 @@ function selectAutoScopedMemories(params: {
   const pinnedLimit = !allowPinned
     ? 0
     : !allowSummary
-      ? params.maxResults
-      : Math.max(1, Math.ceil(params.maxResults / 2));
+    ? params.maxResults
+    : Math.max(1, Math.ceil(params.maxResults / 2));
   const summaryLimit = !allowSummary
     ? 0
     : !allowPinned
-      ? params.maxResults
-      : Math.max(0, params.maxResults - pinnedLimit);
+    ? params.maxResults
+    : Math.max(0, params.maxResults - pinnedLimit);
   const pinned: MemoryRow[] = [];
   const summaries: MemoryRow[] = [];
 
@@ -158,12 +163,12 @@ export function createMemorySearchTool(sessionId: string) {
         const types = normalizeTypes(args.types);
         const typeSet = new Set(types);
 
-        const queryEmbedding = await embedText(query);
-        const filterSessionId = scope === "current" ? sessionId : null;
+        const embedding = await embedText(query);
+        const filterSessionId = scope === "current" ? sessionId : undefined;
 
         const { data, error } = await supabase.rpc("hybrid_search", {
           query_text: query,
-          query_embedding: queryEmbedding,
+          query_embedding: JSON.stringify(embedding),
           match_count: matchCount,
           search_tables: ["memories"],
           filter_type: types,
@@ -174,7 +179,7 @@ export function createMemorySearchTool(sessionId: string) {
           throw new Error(`hybrid_search failed: ${error.message}`);
         }
 
-        const rows = (data?.memories ?? []) as MemoryRow[];
+        const rows: MemoryRow[] = (data as Database["public"]["Functions"]["hybrid_search"]["Returns"])?.memories ?? [];
         const selected = scope === "auto"
           ? selectAutoScopedMemories({
             rows,

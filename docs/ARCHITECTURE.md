@@ -81,6 +81,10 @@ The worker only calls the LLM when there are due jobs, so cron acts as a minimal
   - `memories`: store/read/search tools to manage context across sessions
   - `files`: metadata, vectors, relation to messages
 
+#### Type-Safe DB Access (Supabase generated types)
+- DB schema types are generated from Postgres into `supabase/functions/_shared/database.types.ts` and treated as the single source of truth for table row/insert/update shapes.
+- This keeps runtime behavior aligned with migrations and prevents drift in manual interface definitions.
+
 - **Storage**
   - Bucket `workspace`
     - `.agents/**`: portable persona/soul/skills/tools/workflows
@@ -209,6 +213,74 @@ The worker only calls the LLM when there are due jobs, so cron acts as a minimal
     - Virtual Filesystem: Workspace files are imported on demand and explicitly exported back to Supabase Storage;
     - Network access: Optional allowlisted network access for `curl` (configured via `config.json`, disabled by default).
     - Session shells: reuse the same virtual filesystem across multiple calls within a single agent invocation for multi-step workflows.
+
+## Multimodal Document Understanding
+
+Uploading a file should feel like “dropping it into the conversation” — the agent must reliably see it immediately, remember it later, and be able to read/search its contents on demand. The same attachment must remain discoverable in subsequent turns and across devices (session persistence). For this the ingested file must be processed and persisted into LLM-ready format (page-wise images and OCR for non text-like files).
+
+- When a user uploads a file, the system must persist an attachment reference in the conversation timeline as a message.
+- The persisted attachment reference must include: **file name**, **file type/MIME**, **stored path**, and a **stable identifier** that can be used across turns.
+- The same attachment must remain discoverable in subsequent turns and across devices (session persistence).
+- The system must download/ingest the uploaded file from the channel provider and store it in the cloud workspace.
+- The system must store file metadata and a concise **one-line description** that helps the agent understand what the file is at a glance.
+- For **non-text** documents (e.g. PDFs, scans, images), the system must extract usable text and structure from the document.
+- The pipeline must produce **page-level artifacts** (ordered by page number) and a **single assembled full-text** output.
+- All derived artifacts must be stored under a deterministic location that is directly tied to the original stored path (so they are easy to find and reference).
+- The assembled full-text output must be stored as a plain text file whose name is derived from the original file name (e.g. `original.ext` → `original.ext.txt`).
+- For every agent turn, context construction must include a concise “attachment index” for the current session that lists each attachment with: **name**, **type**, **stored path**, and **one-line description**.
+- The agent must be able to reference attachments naturally in conversation (e.g. “the PDF you uploaded”) and decide when to read details.
+- The attachment index must work for both immediate turn-after-upload and later turns.
+- The downstream agent must be able to read attachment contents using existing workspace file tools (e.g. `read_file`) without requiring channel-provider access.
+
+Dataflow + Persistence:
+```
+          +-------------------+
+          | Channel Provider  |
+          | (Telegram/Slack/…)|
+          +---------+---------+
+                    |
+                    | 1) User uploads file (message + attachment bytes)
+                    v
+          +-------------------+
+          | Webhook Ingress   |
+          | (Edge Function)   |
+          +---------+---------+
+                    |
+                    | 2) Persist upload immediately
+                    |    - store bytes in workspace storage
+                    |    - create/update file record (id, path, metadata, one-liner)
+                    |    - create message in timeline referencing file_id + path
+                    v
+     +-------------------+              +----------------------+
+     | Workspace Storage |<------------>| Database             |
+     | (raw upload)      |              | sessions/messages/   |
+     | path: uploads/... |              | files + metadata     |
+     +---------+---------+              +----------+-----------+
+               |                                   |
+               | 3) File record triggers           | 4) Subsequent turns load:
+               |    processing pipeline            |    - recent chat messages
+               v                                   |    - attachment index
+     +------------------------+                    |
+     | File Processing        |                    |
+     | (non-text documents)   |                    |
+     +-----------+------------+                    |
+                 | 5) Store derived artifacts      |
+                 |    under deterministic folder   |
+                 v                                 v
+     +------------------------+           +------------------------+
+     | Workspace Storage      |           | Agent Context Builder  |
+     | derived/…              |           | - recent messages      |
+     | - page_001 image/text  |           | - attachment index     |
+     | - page_002 image/text  |           +-----------+------------+
+     | - full extracted .txt  |                       |
+     +-----------+------------+                       | 6) Agent decides:
+                 |                                    |    read_file for details
+                 |                                    v
+                 |                          +--------------------+
+                 +------------------------->| Agent + Tools      |
+                                            | (read_file, etc.)  |
+                                            +--------------------+
+```
 
 ## Security Notes
 

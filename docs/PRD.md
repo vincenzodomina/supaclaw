@@ -42,7 +42,7 @@ And of course the big one:
 
 - **Soul/Identity system** — customizable personality and behavior
 - **Always-on** — available 24/7 without babysitting a daemon, but as stateless server without relying on one device to be always on
-- **File storage** — agent can interact with my files in the cloud, 
+- **File storage + attachments** — agent can persist, reference, and work with files in the cloud (uploaded by users or created by the agent)
 - **Scheduled tasks** — heartbeat, reminders, cron/background jobs - for scheduled health checks / proactive tasks - with reliable retries independent from hardware failure
 - **Session persistence** — conversations survive across devices + parallel use possible
 - **Memory** — agent remembers context across sessions and across devices, with semantic search
@@ -50,6 +50,7 @@ And of course the big one:
 - **Tool/Skill extensibility** — easy to add new capabilities
 - **Multi-channel** — same agent, different surfaces (Telegram, Slack, web, etc.)
 - **Portability** - Skills, Tools (CLI's), Sub-agents, Soul/Persona files - should use re-usable standards, importable and exportable
+- **Multimodal Document Understanding** - Uploading a file should feel like “dropping it into the conversation” — the agent must reliably see it immediately, remember it later, and be able to read/search its contents on demand. The same attachment must remain discoverable in subsequent turns and across devices (session persistence). For this the ingested file must be processed and persisted into LLM-ready format (page-wise images and OCR for non text-like files).
 
 ### Nice to Have
 
@@ -146,6 +147,7 @@ Frameworks and libraries and features decided to be used:
 - [ ] I can chat with my agent from Telegram
 - [ ] Agent remembers our conversations
 - [ ] Agent can read/write files I give it access to
+- [ ] When I upload any file, the agent can read and see its content
 - [ ] Agent runs scheduled tasks (heartbeat, reminders)
 - [ ] Monthly cost stays under $20 for personal use
 - [ ] I don't have to touch a terminal after initial setup
