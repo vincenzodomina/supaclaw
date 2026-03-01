@@ -1,5 +1,3 @@
-import { mustGetEnv } from "./helpers.ts";
-
 export type DocumentSource = {
   bucket: string;
   objectPath: string;
@@ -18,24 +16,6 @@ export type RenderResult = {
   pages: RenderedPage[];
 };
 
-/**
- * Ideal API contract (to be implemented by an external service):
- *
- * POST {DOC_RENDERER_URL}/v1/render
- * Headers:
- *  - Authorization: Bearer <DOC_RENDERER_API_KEY>
- * Body (JSON):
- *  {
- *    "source": { "bucket": "...", "object_path": "...", "name": "...", "mime_type": "..." },
- *    "output": { "format": "png", "max_pages": null }
- *  }
- * Response (JSON):
- *  {
- *    "pages": [
- *      { "page_number": 1, "media_type": "image/png", "bytes_base64": "..." }
- *    ]
- *  }
- */
 export async function renderDocumentToPngPages(params: {
   source: DocumentSource;
   /** Original bytes may be provided for single-image sources. */
@@ -48,7 +28,9 @@ export async function renderDocumentToPngPages(params: {
   // For PDFs/office docs, require an external renderer API.
   if (isImage) {
     if (!params.bytes?.byteLength) {
-      throw new Error("renderDocumentToPngPages: missing bytes for image source");
+      throw new Error(
+        "renderDocumentToPngPages: missing bytes for image source",
+      );
     }
     return {
       pages: [
@@ -61,50 +43,12 @@ export async function renderDocumentToPngPages(params: {
     };
   }
 
-  const baseUrl = Deno.env.get("DOC_RENDERER_URL")?.trim();
-  if (!baseUrl) {
-    throw new Error(
-      "DOC_RENDERER_URL is not set (required to render PDFs/office documents into page images)",
-    );
-  }
+  // TODO: Implement actual document rendering
+  const rendered = [];
 
-  const apiKey = mustGetEnv("DOC_RENDERER_API_KEY");
-  const url = `${baseUrl.replace(/\/+$/, "")}/v1/render`;
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "authorization": `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      source: {
-        bucket: params.source.bucket,
-        object_path: params.source.objectPath,
-        name: params.source.name,
-        mime_type: params.source.mimeType,
-      },
-      output: { format: "png", max_pages: null },
-    }),
-  });
-
-  const text = await res.text().catch(() => "");
-  if (!res.ok) {
-    throw new Error(
-      `Document renderer failed (${res.status}): ${text.slice(0, 500)}`,
-    );
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    throw new Error("Document renderer returned invalid JSON");
-  }
-
-  const obj = parsed as Record<string, unknown>;
-  const pages = Array.isArray(obj.pages) ? obj.pages : [];
-  const rendered: RenderedPage[] = [];
+  const pages: RenderedPage[] = await Promise.resolve([
+    { pageNumber: 1, mediaType: "image/png", bytes: new Uint8Array() },
+  ]);
 
   for (const p of pages) {
     const page = p as Record<string, unknown>;
@@ -125,4 +69,3 @@ export async function renderDocumentToPngPages(params: {
   rendered.sort((a, b) => a.pageNumber - b.pageNumber);
   return { pages: rendered };
 }
-
