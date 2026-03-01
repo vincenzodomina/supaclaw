@@ -76,20 +76,41 @@ fi
 # shellcheck source=/dev/null
 source "${NGROK_HELPER}"
 
+COLOR_RESET=""
+COLOR_BOLD=""
+COLOR_DIM=""
+COLOR_CYAN=""
+COLOR_YELLOW=""
+COLOR_RED=""
+
+if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-}" != "dumb" ]]; then
+  COLOR_RESET=$'\033[0m'
+  COLOR_BOLD=$'\033[1m'
+  COLOR_DIM=$'\033[2m'
+  COLOR_CYAN=$'\033[36m'
+  COLOR_YELLOW=$'\033[33m'
+  COLOR_RED=$'\033[31m'
+fi
+
 log() {
-  printf "\n[install] %s\n" "$1"
+  if [[ "$1" =~ ^Step\ [0-9]+/[0-9]+\ -\  ]]; then
+    printf "\n%s%s[install] %s%s\n" "${COLOR_BOLD}" "${COLOR_CYAN}" "$1" "${COLOR_RESET}"
+    printf "%s%s────────────────────────────────────────────────────────────%s\n" "${COLOR_DIM}" "${COLOR_CYAN}" "${COLOR_RESET}"
+  else
+    printf "\n%s%s[install] %s%s\n" "${COLOR_BOLD}" "${COLOR_CYAN}" "$1" "${COLOR_RESET}"
+  fi
 }
 
 warn() {
-  printf "[install][warn] %s\n" "$1"
+  printf "%s%s[install][warn] %s%s\n" "${COLOR_YELLOW}" "${COLOR_BOLD}" "$1" "${COLOR_RESET}"
 }
 
-hint() {
-  printf "[install][hint] %s\n" "$1"
+info() {
+  printf "%s[install][info] %s%s\n" "${COLOR_DIM}" "$1" "${COLOR_RESET}"
 }
 
 die() {
-  printf "[install][error] %s\n" "$1" >&2
+  printf "%s%s[install][error] %s%s\n" "${COLOR_RED}" "${COLOR_BOLD}" "$1" "${COLOR_RESET}" >&2
   exit 1
 }
 
@@ -238,31 +259,30 @@ fi
 
 NGROK_TUNNEL_URL="$(ngrok_get_https_tunnel_url)"
 
-log "Status hint"
 if [[ "${SUPABASE_ALREADY_RUNNING}" == "true" ]]; then
-  hint "Supabase local stack: running"
+  info "Supabase local stack: running"
 else
-  hint "Supabase local stack: not running"
+  info "Supabase local stack: not running"
 fi
 if [[ "${FUNCTIONS_ALREADY_RUNNING}" == "true" ]]; then
-  hint "Edge functions serve: running (will default to skip starting again)"
+  info "Edge functions serve: running (will default to skip starting again)"
 else
-  hint "Edge functions serve: not running"
+  info "Edge functions serve: not running"
 fi
 if [[ -n "${NGROK_TUNNEL_URL}" ]]; then
-  hint "ngrok HTTPS tunnel: running at ${NGROK_TUNNEL_URL}"
+  info "ngrok HTTPS tunnel: running at ${NGROK_TUNNEL_URL}"
 else
-  hint "ngrok HTTPS tunnel: not detected"
+  info "ngrok HTTPS tunnel: not detected"
 fi
 
 log "Step 2/10 - Starting Supabase local services"
 if [[ "${SUPABASE_ALREADY_RUNNING}" == "true" ]]; then
   if [[ "${DEV_MODE}" == "true" ]]; then
-    hint "Skipping 'supabase start' because services are already up. (--dev)"
+    info "Skipping 'supabase start' because services are already up. (--dev)"
   elif ask_yes_no "Supabase appears already running. Run 'supabase start' again?" "n"; then
     supabase start
   else
-    hint "Skipping 'supabase start' because services are already up."
+    info "Skipping 'supabase start' because services are already up."
   fi
 else
   if [[ "${DEV_MODE}" == "true" ]]; then
@@ -277,7 +297,7 @@ fi
 log "Step 3/10 - Pushing database schema/migrations to local DB"
 supabase db push --local
 
-log "Step 4/10 - Configuring supabase/.env.local interactively"
+log "Step 4/10 - Configuring supabase/.env.local"
 if [[ ! -f "${ENV_EXAMPLE}" ]]; then
   die "Missing ${ENV_EXAMPLE}"
 fi
@@ -293,7 +313,7 @@ if [[ "${DEV_MODE}" == "true" ]]; then
   if [[ ! -f "${ENV_LOCAL}" ]]; then
     die "supabase/.env.local is missing; cannot skip env setup in --dev mode."
   fi
-  hint "Skipping supabase/.env.local setup (--dev; using existing file)."
+  info "Skipping supabase/.env.local setup (--dev; using existing file)."
 elif ask_yes_no "${env_prompt}" "${env_default}"; then
   if [[ ! -f "${ENV_LOCAL}" ]]; then
     cp "${ENV_EXAMPLE}" "${ENV_LOCAL}"
@@ -328,7 +348,7 @@ else
   if [[ ! -f "${ENV_LOCAL}" ]]; then
     die "supabase/.env.local is missing; cannot skip env setup."
   fi
-  hint "Skipping supabase/.env.local setup (using existing file)."
+  info "Skipping supabase/.env.local setup (using existing file)."
 fi
 
 log "Step 5/10 - Seeding workspace .agents files to Supabase Storage"
@@ -339,7 +359,7 @@ bash "${AGENTS_SEED_SCRIPT}" \
   --source-dir "${REPO_ROOT}/workspace/.agents" \
   --workspace-bucket "${WORKSPACE_BUCKET_VALUE}"
 
-log "Step 6/10 - Optional: Seed project source code from GitHub to Supabase Storage"
+log "Step 6/10 - Seed project source code from GitHub to Supabase Storage"
 if [[ "${DEV_MODE}" == "true" ]]; then
   bash "${SOURCE_SEED_SCRIPT}" "${GITHUB_SOURCE_URL_DEFAULT}" \
     --env-file "${ENV_LOCAL}" \
@@ -358,7 +378,7 @@ fi
 log "Step 7/10 - Installing Deno dependencies for edge functions"
 (cd "${REPO_ROOT}/supabase/functions/_shared" && deno install)
 
-log "Step 8/10 - Optional: Deploy local Vault secrets"
+log "Step 8/10 - Deploy local Vault secrets"
 if [[ -x "${VAULT_SCRIPT}" ]]; then
   if [[ "${DEV_MODE}" == "true" ]]; then
     "${VAULT_SCRIPT}"
@@ -369,10 +389,10 @@ else
   warn "Vault script is missing or not executable: ${VAULT_SCRIPT}"
 fi
 
-log "Step 9/10 - Optional: Configure Telegram webhook (ngrok)"
+log "Step 9/10 - Configure Telegram webhook (ngrok)"
 if [[ -x "${WEBHOOK_SCRIPT}" ]]; then
   if [[ "${DEV_MODE}" == "true" ]]; then
-    hint "Skipping Telegram webhook helper (--dev)."
+    info "Skipping Telegram webhook helper (--dev)."
   else
     webhook_default="n"
     webhook_prompt="Run Telegram webhook helper now?"
@@ -387,7 +407,7 @@ else
   warn "Webhook helper script is missing or not executable: ${WEBHOOK_SCRIPT}"
 fi
 
-log "Step 10/10 - Optional: Start local edge functions server"
+log "Step 10/10 - Start local edge functions server"
 functions_default="y"
 functions_prompt="Start supabase functions serve now? (This will keep this terminal occupied)"
 if [[ "${FUNCTIONS_ALREADY_RUNNING}" == "true" ]]; then
@@ -396,7 +416,7 @@ if [[ "${FUNCTIONS_ALREADY_RUNNING}" == "true" ]]; then
 fi
 if [[ "${DEV_MODE}" == "true" ]]; then
   if [[ "${FUNCTIONS_ALREADY_RUNNING}" == "true" ]]; then
-    hint "Skipping 'supabase functions serve' because it is already running. (--dev)"
+    info "Skipping 'supabase functions serve' because it is already running. (--dev)"
     printf "\n[install] Setup completed!\n"
   else
     supabase functions serve \
