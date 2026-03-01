@@ -9,6 +9,8 @@ import { getConfigNumber, getConfigString } from "./helpers.ts";
 import { logger } from "./logger.ts";
 import { uploadFile } from "./storage.ts";
 import { createServiceClient } from "./supabase.ts";
+import type { Json, Tables } from "./database.types.ts";
+type SessionRow = Tables<"sessions">;
 
 export class DuplicateInboundError extends Error {
   constructor(channelUpdateId: string) {
@@ -89,7 +91,7 @@ export async function runAgent({
   model,
   maxSteps = getConfigNumber("agent.max_steps") ?? 25,
 }: {
-  channel: string;
+  channel: SessionRow["channel"];
   channelChatId: string;
   userMessage?: {
     content: string;
@@ -118,14 +120,13 @@ export async function runAgent({
 
   let sessionId: string;
   let inboundId: number;
-  let resolvedChannel = channel;
   let resolvedChatId = channelChatId;
 
   if (existingInboundId != null) {
     // Derive session context from the existing inbound row
     const { data: inbound, error: loadErr } = await supabase
       .from("messages")
-      .select("id, session_id, channel, channel_chat_id")
+      .select("id, session_id, channel_chat_id")
       .eq("id", existingInboundId)
       .single();
     if (loadErr || !inbound) {
@@ -133,7 +134,6 @@ export async function runAgent({
     }
     sessionId = inbound.session_id as string;
     inboundId = inbound.id as number;
-    resolvedChannel = inbound.channel as string;
     resolvedChatId = (inbound.channel_chat_id as string) ?? channelChatId;
   } else if (userMessage) {
     // 1. Upsert session
@@ -159,7 +159,6 @@ export async function runAgent({
         type: userMessage.fileId ? "file" : "text",
         content: userMessage.content,
         file_id: userMessage.fileId ?? null,
-        channel,
         channel_update_id: userMessage.channelUpdateId,
         channel_message_id: userMessage.channelMessageId,
         channel_chat_id: channelChatId,
@@ -200,7 +199,6 @@ export async function runAgent({
         role: "assistant",
         type: "text",
         content: "",
-        channel: resolvedChannel,
         channel_chat_id: resolvedChatId,
         channel_sent_at: null,
       })
@@ -233,7 +231,6 @@ export async function runAgent({
           content: JSON.stringify(args),
           tool_name: chunk.toolName,
           tool_status: "started",
-          channel: resolvedChannel,
           channel_update_id: `tool:${inboundId}:${chunk.toolCallId}`,
           channel_chat_id: resolvedChatId,
         }).select("id").single();
@@ -248,7 +245,7 @@ export async function runAgent({
         if (state) {
           await supabase.from("messages").update({
             tool_status: "succeeded",
-            tool_result: chunk.output ?? null,
+            tool_result: chunk.output as Json ?? undefined,
             tool_duration_ms: Date.now() - state.startedAt,
           }).eq("id", state.rowId);
         }

@@ -1,4 +1,5 @@
 {
+  "agent.name": "supa_claw_bot",
   "agent.max_steps": 100,
   "agent.latest_messages_count": 100,
   "llms.agent.model": "gpt-5.2",
@@ -16,5 +17,7 @@
   "tools.bash.network.max_response_bytes": 5242880,
   "tools.bash.network.dangerously_allow_full_internet_access": false,
   "channels.telegram.enabled": true,
-  "channels.telegram.show_tool_calls": true
+  "channels.telegram.show_tool_calls": true,
+  "channels.dm.reply_mode": "all",
+  "channels.group.reply_mode": "mention"
 }

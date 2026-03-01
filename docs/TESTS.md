@@ -16,6 +16,11 @@ bash ./scripts/install.sh
 
 Check local stack with: `supabase status`
 
+Check running services:
+```bash
+ps aux | grep supabase
+```
+
 #### Verify Ngrok
 
 ```bash

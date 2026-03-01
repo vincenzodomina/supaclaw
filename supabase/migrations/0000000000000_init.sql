@@ -8,7 +8,7 @@ create extension if not exists pg_cron;
 create extension if not exists supabase_vault cascade;
 
 -- Enums
-create type enum_channel_provider as enum ('telegram', 'slack', 'whatsapp', 'discord', 'imessage', 'phone', 'email', 'web', 'mobile', 'desktop', 'api');
+create type enum_channel_provider as enum ('telegram', 'slack', 'teams', 'whatsapp', 'discord', 'imessage', 'phone', 'email', 'web', 'mobile', 'desktop', 'api');
 create type enum_message_role as enum ('assistant', 'user', 'system');
 create type enum_message_type as enum ('text', 'tool-call', 'file');
 create type enum_message_tool_status as enum ('started', 'succeeded', 'failed');
@@ -62,7 +62,6 @@ create table if not exists messages (
   fts tsvector generated always as (to_tsvector('english', content)) stored,
   -- Vector search (384 dims for gte-small)
   embedding extensions.vector(384),
-  channel enum_channel_provider not null,
   channel_update_id text,
   channel_message_id text,
   channel_chat_id text,
@@ -81,8 +80,8 @@ create table if not exists messages (
 
 alter table messages enable row level security;
 
-create unique index if not exists messages_channel_update_id_uniq
-  on messages (channel, channel_update_id)
+create unique index if not exists messages_session_update_id_uniq
+  on messages (session_id, channel_update_id)
   where channel_update_id is not null;
 
 create index if not exists messages_session_created_idx

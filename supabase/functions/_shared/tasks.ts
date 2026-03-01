@@ -1,5 +1,6 @@
 import { createServiceClient } from "./supabase.ts";
 import { computeNextRun } from "./tools/cron.ts";
+import type { TablesUpdate } from "./database.types.ts";
 
 const supabase = createServiceClient();
 
@@ -11,7 +12,7 @@ export async function updateTaskAfterRun(taskId: number) {
     .maybeSingle();
   if (error || !task) return;
 
-  const patch: Record<string, unknown> = {
+  const patch: TablesUpdate<"tasks"> = {
     last_run_at: new Date().toISOString(),
     run_count: task.run_count + 1,
     last_error: null,

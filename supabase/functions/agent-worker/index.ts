@@ -5,19 +5,41 @@ import {
   textResponse,
   timingSafeEqual,
 } from "../_shared/helpers.ts";
-import { TELEGRAM_STREAM_PARAMS } from "../_shared/telegram.ts";
 import { logger } from "../_shared/logger.ts";
 import { embedText } from "../_shared/embeddings.ts";
 import { updateTaskAfterRun } from "../_shared/tasks.ts";
-import { runAgentAndStreamToTelegram } from "../_shared/telegram.ts";
+import { createChatBot } from "../_shared/bot.ts";
+import { runAgent } from "../_shared/agent.ts";
+import type { Database, Json, Tables } from "../_shared/database.types.ts";
+type SessionRow = Tables<"sessions">;
 
-type JobRow = {
-  id: number;
-  type: string;
-  payload: Record<string, unknown>;
-};
+type JobRow = Database["public"]["Functions"]["claim_jobs"]["Returns"][number];
+type RunTaskType = "reminder" | "agent_turn";
 
 const supabase = createServiceClient();
+const { bot, adapters } = createChatBot();
+
+const FALLBACK_REPLY =
+  "I hit a temporary issue generating a response. Please try again in a moment.";
+
+function normalizeThreadId(channel: string, raw: string): string {
+  const value = String(raw ?? "").trim();
+  if (!value) return value;
+
+  if (channel === "telegram") {
+    return value.startsWith("telegram:") ? value : `telegram:${value}`;
+  }
+  if (channel === "slack") {
+    return value.startsWith("slack:") ? value : `slack:${value}`;
+  }
+  if (channel === "teams") {
+    return value.startsWith("teams:") ? value : `teams:${value}`;
+  }
+  if (channel === "discord") {
+    return value.startsWith("discord:") ? value : `discord:${value}`;
+  }
+  return value;
+}
 
 function isAuthorized(req: Request) {
   const expected = mustGetEnv("WORKER_SECRET");
@@ -33,7 +55,7 @@ async function claimJobs(workerId: string, maxJobs = 3): Promise<JobRow[]> {
     p_lock_timeout_seconds: 300,
   });
   if (error) throw new Error(`claim_jobs failed: ${error.message}`);
-  const jobs = (data ?? []) as JobRow[];
+  const jobs: JobRow[] = data ?? [];
   logger.info("jobs.claim.done", { workerId, claimed: jobs.length });
   return jobs;
 }
@@ -57,14 +79,30 @@ async function jobFail(
 }
 
 async function processRunTask(job: JobRow) {
-  const taskId = job.payload.task_id as number;
-  const prompt = job.payload.prompt as string;
-  const sessionId = job.payload.session_id as string;
-  const taskType = (job.payload.task_type as string) || "reminder";
-
-  if (!taskId || !prompt || !sessionId) {
+  if (
+    typeof job.payload !== "object" || job.payload === null ||
+    Array.isArray(job.payload)
+  ) {
     throw new Error("Invalid run_task payload");
   }
+
+  const payload = job.payload as Record<string, Json>;
+  const taskId = payload.task_id;
+  const prompt = payload.prompt;
+  const sessionId = payload.session_id;
+  const rawTaskType = payload.task_type;
+
+  if (
+    typeof taskId !== "number" || !Number.isFinite(taskId) ||
+    typeof prompt !== "string" || !prompt.trim() ||
+    typeof sessionId !== "string" || !sessionId.trim()
+  ) {
+    throw new Error("Invalid run_task payload");
+  }
+
+  const taskType: RunTaskType = rawTaskType === "agent_turn"
+    ? "agent_turn"
+    : "reminder";
 
   logger.info("job.run_task.start", { jobId: job.id, taskId, taskType });
 
@@ -75,26 +113,38 @@ async function processRunTask(job: JobRow) {
     .maybeSingle();
   if (sessErr) throw new Error(`Failed to load session: ${sessErr.message}`);
   if (!session) throw new Error(`Session not found: ${sessionId}`);
-  if (session.channel !== "telegram") {
-    logger.info("job.run_task.skip_channel", { jobId: job.id, taskId, channel: session.channel });
+
+  const channel = String(session.channel ?? "").trim() as SessionRow["channel"];
+  const threadId = normalizeThreadId(channel, session.channel_chat_id);
+  if (!channel || !threadId) {
+    throw new Error("Session is missing channel or channel_chat_id");
+  }
+
+  if (!adapters[channel]) {
+    logger.info("job.run_task.skip_missing_adapter", {
+      jobId: job.id,
+      taskId,
+      channel,
+    });
     return;
   }
 
-  const chatId = session.channel_chat_id;
   const role = taskType === "agent_turn" ? "user" as const : "system" as const;
   const content = taskType === "reminder" ? `Reminder: ${prompt}` : prompt;
 
-  await runAgentAndStreamToTelegram({
-    channel: session.channel,
-    channelChatId: chatId,
+  const result = await runAgent({
+    channel,
+    channelChatId: threadId,
     userMessage: {
       content,
       role,
       channelUpdateId: `task:${taskId}:${Date.now()}`,
     },
-    telegramChatId: chatId,
-    streamMode: TELEGRAM_STREAM_PARAMS.mode,
   });
+
+  const reply = ((await result.text) ?? "").trim() || FALLBACK_REPLY;
+  const adapter = bot.getAdapter(channel as never);
+  await adapter.postMessage(threadId, reply);
 
   await updateTaskAfterRun(taskId);
 
@@ -122,8 +172,19 @@ async function processEmbed(job: JobRow, config: EmbedConfig) {
     type: job.type,
     table: config.table,
   });
-  const id = job.payload[config.idKey];
-  if (!id) throw new Error(`Invalid ${job.type} payload`);
+  if (
+    typeof job.payload !== "object" || job.payload === null ||
+    Array.isArray(job.payload)
+  ) {
+    throw new Error(`Invalid ${job.type} payload`);
+  }
+
+  const payload = job.payload as Record<string, Json>;
+  const rawId = payload[config.idKey];
+  const id = config.idKey === "file_id"
+    ? (typeof rawId === "string" && rawId.trim() ? rawId : null)
+    : (typeof rawId === "number" && Number.isFinite(rawId) ? rawId : null);
+  if (id == null) throw new Error(`Invalid ${job.type} payload`);
 
   const { data: row, error: loadErr } = await supabase
     .from(config.table)
@@ -140,7 +201,7 @@ async function processEmbed(job: JobRow, config: EmbedConfig) {
   const { error: updateErr } = await supabase
     .from(config.table)
     .update({
-      embedding,
+      embedding: JSON.stringify(embedding),
       updated_at: new Date().toISOString(),
     })
     .eq("id", id);

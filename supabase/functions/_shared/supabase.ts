@@ -1,11 +1,12 @@
 import { createClient } from '@supabase/supabase-js'
+import type { Database } from "./database.types.ts"
 import { mustGetEnv } from './helpers.ts'
 
 export function createServiceClient() {
   const url = mustGetEnv('SUPABASE_URL')
   const key = mustGetEnv('SUPABASE_SERVICE_ROLE_KEY')
 
-  return createClient(url, key, {
+  return createClient<Database>(url, key, {
     auth: { persistSession: false },
     global: {
       headers: {

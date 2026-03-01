@@ -1,30 +1,253 @@
+import { Attachment, Message, Thread } from "chat";
+import { createServiceClient } from "../_shared/supabase.ts";
+import { DuplicateInboundError, runAgent } from "../_shared/agent.ts";
+import { uploadFile } from "../_shared/storage.ts";
+import { toolDisplay } from "../_shared/tools/index.ts";
+import { createChatBot } from "../_shared/bot.ts";
 import {
+  formatBytes,
   getBearerToken,
+  getConfigBoolean,
+  getConfigString,
   jsonResponse,
   mustGetEnv,
+  summarize,
   textResponse,
   timingSafeEqual,
   type VerifiedJwt,
   verifySupabaseJwt,
-  formatBytes,
 } from "../_shared/helpers.ts";
 import { logger } from "../_shared/logger.ts";
-import {
-  isAllowedTelegramUser,
-  runAgentAndStreamToTelegram,
-  telegramDownloadFile,
-  TELEGRAM_STREAM_PARAMS,
-  telegramSendChunkedMessage,
-  verifyTelegramSecret,
-} from "../_shared/telegram.ts";
-import { DuplicateInboundError } from "../_shared/agent.ts";
-import { uploadFile } from "../_shared/storage.ts";
-import { ChannelUpdate, getChannelAttachment } from "../_shared/channels.ts";
-import { createServiceClient } from "../_shared/supabase.ts";
 
 declare const EdgeRuntime: { waitUntil(promise: Promise<unknown>): void };
 
 const supabase = createServiceClient();
+
+const { bot, adapters } = createChatBot();
+
+// ── Unified message handler for all channels ────────────────────────
+
+function channelOf(threadId: string): string {
+  const i = threadId.indexOf(":");
+  return i > 0 ? threadId.slice(0, i) : threadId;
+}
+
+type ReplyMode = "all" | "mention";
+
+function getReplyMode(scope: "dm" | "group"): ReplyMode {
+  const key = scope === "dm"
+    ? "channels.dm.reply_mode"
+    : "channels.group.reply_mode";
+  const value = getConfigString(key);
+  return value === "all" ? "all" : "mention";
+}
+
+function shouldHandleNewMessage(
+  thread: Thread<Record<string, unknown>, unknown>,
+  message: Message<unknown>,
+): boolean {
+  const mode = thread.isDM ? getReplyMode("dm") : getReplyMode("group");
+  if (mode === "all") return true;
+  return Boolean(message.isMention);
+}
+
+function createTextStreamWithToolTelemetry(params: {
+  thread: Thread<Record<string, unknown>, unknown>;
+  fullStream: AsyncIterable<unknown>;
+  showToolCalls: boolean;
+}) {
+  const toolMsgState = new Map<
+    string,
+    {
+      sent: { edit(content: string): Promise<unknown> };
+      toolName: string;
+      args: Record<string, unknown>;
+    }
+  >();
+
+  return {
+    async *[Symbol.asyncIterator](): AsyncIterator<string> {
+      for await (const part of params.fullStream) {
+        const evt = (part && typeof part === "object")
+          ? part as Record<string, unknown>
+          : null;
+        const type = typeof evt?.type === "string" ? evt.type : "";
+
+        if (type === "text-delta") {
+          const text = typeof evt?.text === "string" ? evt.text : "";
+          if (text) yield text;
+          continue;
+        }
+
+        if (!params.showToolCalls) continue;
+
+        if (type === "tool-call") {
+          const toolName = typeof evt?.toolName === "string"
+            ? evt.toolName
+            : "tool";
+          const toolCallId = typeof evt?.toolCallId === "string"
+            ? evt.toolCallId
+            : crypto.randomUUID();
+          const args = (evt?.input && typeof evt.input === "object")
+            ? (evt.input as Record<string, unknown>)
+            : {};
+
+          const startText = toolDisplay(toolName, args, null) ??
+            summarize(args);
+          try {
+            const sent = await params.thread.post(
+              `⚙️ ${toolName} ${startText}`,
+            ) as unknown as {
+              edit(content: string): Promise<unknown>;
+            };
+            toolMsgState.set(toolCallId, { sent, toolName, args });
+          } catch (error) {
+            logger.warn("tool-call.post_failed", { toolName, error });
+          }
+          continue;
+        }
+
+        if (type === "tool-result") {
+          const toolCallId = typeof evt?.toolCallId === "string"
+            ? evt.toolCallId
+            : "";
+          const state = toolMsgState.get(toolCallId);
+          if (!state) continue;
+
+          const output = evt?.output;
+          const doneText = toolDisplay(state.toolName, state.args, output) ??
+            summarize(output);
+          try {
+            await state.sent.edit(`✅ ${state.toolName} ${doneText}`);
+          } catch (error) {
+            logger.warn("tool-call.edit_failed", {
+              toolName: state.toolName,
+              error,
+            });
+          }
+          continue;
+        }
+      }
+    },
+  };
+}
+
+async function handleMessage(
+  thread: Thread<Record<string, unknown>, unknown>,
+  message: Message<unknown>,
+) {
+  const channel = channelOf(thread.id);
+
+  if (channel === "telegram") {
+    const allowedId = Deno.env.get("TELEGRAM_ALLOWED_USER_ID")?.trim();
+    if (allowedId && message.author.userId !== allowedId) return;
+  }
+
+  let content = (message.text ?? "").trim();
+  let fileId: string | undefined;
+
+  if (message.attachments?.length) {
+    const attachmentDescriptions: string[] = [];
+
+    for (const [index, attachment] of message.attachments.entries()) {
+      const att = attachment as Attachment;
+      const raw = await att?.fetchData?.();
+      if (!raw) {
+        logger.error("webhook.message.attachment_fetch_failed", {
+          channel,
+          messageId: message.id,
+          attachmentIndex: index,
+        });
+        continue;
+      }
+
+      const data = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+      const safeName = (att.name ?? "file").replace(/[^a-zA-Z0-9._-]/g, "_");
+      const objectPath = `uploads/${message.id}_${index}_${safeName}`;
+      const file = await uploadFile(objectPath, data, {
+        name: att.name,
+        mimeType: att.mimeType,
+      });
+      if (!fileId) fileId = file.id;
+
+      const meta = [att.name ?? "file"];
+      if (att.mimeType) meta.push(att.mimeType);
+      if (att.size) meta.push(formatBytes(att.size));
+      attachmentDescriptions.push(`[File: ${meta.join(", ")}] → ${objectPath}`);
+    }
+
+    if (attachmentDescriptions.length) {
+      const attachmentsText = attachmentDescriptions.join("\n");
+      content = content ? `${attachmentsText}\n${content}` : attachmentsText;
+    }
+  }
+
+  if (!content && !fileId) return;
+
+  try {
+    const result = await runAgent({
+      channel,
+      channelChatId: thread.id,
+      userMessage: {
+        content,
+        channelUpdateId: message.id,
+        channelMessageId: message.id,
+        channelFromUserId: message.author.userId,
+        fileId,
+      },
+    });
+
+    const showToolCalls = channel === "telegram" &&
+      getConfigBoolean("channels.telegram.show_tool_calls") === true;
+
+    if (channel === "telegram") {
+      const stream = createTextStreamWithToolTelemetry({
+        thread,
+        fullStream: result.fullStream,
+        showToolCalls,
+      });
+
+      // Chat SDK fallback streaming posts an initial "..." placeholder on Telegram.
+      // Workaround: delete the streamed message after completion and repost final text
+      // so it appears after any tool telemetry messages.
+      const sent = await thread.post(stream);
+      const finalText = (sent.text ?? "").trim();
+
+      if (showToolCalls && finalText) {
+        await sent.delete().catch(() => {});
+        await thread.post(finalText);
+      }
+      return;
+    }
+
+    // Other channels: keep native streaming behavior.
+    await thread.post(result.textStream);
+  } catch (err) {
+    if (err instanceof DuplicateInboundError) return;
+    logger.error("webhook.agent_error", { channel, error: err });
+    await thread.post("I hit an error. Please try again.").catch(() => {});
+  }
+}
+
+bot.onNewMention(async (thread, message) => {
+  await thread.subscribe();
+  await handleMessage(thread, message);
+});
+
+bot.onSubscribedMessage(async (thread, message) => {
+  if (message.author.isMe) return;
+  await handleMessage(thread, message);
+});
+
+bot.onNewMessage(/[\s\S]*/, async (thread, message) => {
+  if (!shouldHandleNewMessage(thread, message)) return;
+  if (thread.isDM) {
+    await thread.subscribe();
+  }
+  await handleMessage(thread, message);
+});
+
+// ── Trigger (external services / job enqueue) ───────────────────────
 
 const ALLOWED_JOB_TYPES = new Set([
   "trigger",
@@ -40,37 +263,16 @@ type AuthContext =
 
 async function authorizeTrigger(req: Request): Promise<AuthContext> {
   const token = getBearerToken(req);
-
   if (timingSafeEqual(mustGetEnv("TRIGGER_WEBHOOK_SECRET"), token)) {
     return { authType: "secret" };
   }
-
   const claims = await verifySupabaseJwt(token);
   if (!claims.sub) throw new Error("Invalid JWT: missing subject claim");
-
   const role = typeof claims.role === "string" ? claims.role : null;
   if (!role || (role !== "authenticated" && role !== "service_role")) {
     throw new Error("Invalid JWT role for this endpoint");
   }
-
   return { authType: "jwt", claims };
-}
-
-function routeHead(req: Request): "trigger" | "telegram" | null {
-  const { pathname } = new URL(req.url);
-  const parts = pathname.split("/").filter(Boolean);
-  // Edge runtime can forward either "/webhook/<route>" or
-  // "/functions/v1/webhook/<route>" depending on invocation path.
-  const short = parts.length === 2 && parts[0] === "webhook" ? parts[1] : null;
-  const full = parts.length === 4 &&
-      parts[0] === "functions" &&
-      parts[1] === "v1" &&
-      parts[2] === "webhook"
-    ? parts[3]
-    : null;
-  const head = short ?? full;
-  if (head !== "trigger" && head !== "telegram") return null;
-  return head;
 }
 
 async function handleTrigger(req: Request) {
@@ -93,15 +295,16 @@ async function handleTrigger(req: Request) {
   const type = typeof body?.type === "string" ? body.type : "trigger";
   if (!ALLOWED_JOB_TYPES.has(type)) {
     logger.warn("webhook.trigger.unsupported_type", { type });
-    return jsonResponse({ ok: false, error: `unsupported job type: ${type}` }, {
-      status: 400,
-    });
+    return jsonResponse(
+      { ok: false, error: `unsupported job type: ${type}` },
+      { status: 400 },
+    );
   }
+
   const dedupeKey =
     typeof body?.dedupe_key === "string" && body.dedupe_key.trim()
       ? body.dedupe_key
       : `trigger:${crypto.randomUUID()}`;
-
   const payload = typeof body?.payload === "object" && body.payload
     ? body.payload
     : body;
@@ -133,93 +336,50 @@ async function handleTrigger(req: Request) {
   return jsonResponse({ ok: true, job_id: data });
 }
 
-async function handleTelegram(req: Request) {
-  if (req.method !== "POST") {
-    return textResponse("method not allowed", { status: 405 });
-  }
-  if (!verifyTelegramSecret(req)) {
-    logger.warn("webhook.telegram.secret_mismatch");
-    return textResponse("forbidden", { status: 403 });
-  }
+// ── Router ──────────────────────────────────────────────────────────
 
-  let update: ChannelUpdate;
-  try {
-    update = (await req.json()) as ChannelUpdate;
-  } catch {
-    logger.warn("webhook.telegram.invalid_json");
-    return textResponse("invalid json", { status: 400 });
-  }
-  const message = update.message ?? update.edited_message;
-  if (!message) return textResponse("ok");
+type Route = "trigger" | "telegram" | "slack" | "teams" | "discord";
+const ROUTES = new Set<Route>([
+  "trigger",
+  "telegram",
+  "slack",
+  "teams",
+  "discord",
+]);
 
-  if (!isAllowedTelegramUser(message)) {
-    logger.info("webhook.telegram.user_not_allowed");
-    return textResponse("ok");
-  }
-
-  const chatId = String(message.chat.id);
-  const updateId = String(update.update_id);
-  const messageId = String(message.message_id);
-  const fromUserId = message.from?.id == null ? null : String(message.from.id);
-
-  const attachment = getChannelAttachment(message);
-  let content = typeof message.text === "string" && message.text.trim()
-    ? message.text
-    : undefined;
-  let fileId: string | undefined;
-
-  if (attachment) {
-    const downloaded = await telegramDownloadFile(attachment.fileId);
-    const safeName = attachment.fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const objectPath = `uploads/${updateId}_${safeName}`;
-    const file = await uploadFile(objectPath, downloaded.data, {
-      name: attachment.fileName,
-      mimeType: attachment.mimeType,
-    });
-    fileId = file.id;
-
-    const meta = [attachment.fileName];
-    if (attachment.mimeType) meta.push(attachment.mimeType);
-    if (downloaded.size) meta.push(formatBytes(downloaded.size));
-    const desc = `[File: ${meta.join(", ")}] → ${objectPath}`;
-    content = attachment.caption ? `${desc}\n${attachment.caption}` : desc;
-  }
-
-  if (!content && !fileId) return textResponse("ok");
-
-  const processing = runAgentAndStreamToTelegram({
-    channel: "telegram",
-    channelChatId: chatId,
-    userMessage: {
-      content: content ?? "",
-      channelUpdateId: updateId,
-      channelMessageId: messageId,
-      channelFromUserId: fromUserId ?? undefined,
-      fileId,
-    },
-    telegramChatId: chatId,
-    streamMode: TELEGRAM_STREAM_PARAMS.mode,
-  }).catch((err) => {
-    if (err instanceof DuplicateInboundError) {
-      logger.info("webhook.telegram.duplicate_message", { updateId });
-      return;
-    }
-    const msg = err instanceof Error ? err.message : String(err);
-    logger.error("webhook.telegram.process_failed", { error: msg, updateId });
-    telegramSendChunkedMessage({
-      chatId,
-      text: "I hit a temporary issue generating a response. Please try again in a moment.",
-    }).catch(() => {});
-  });
-
-  EdgeRuntime.waitUntil(processing);
-  return textResponse("ok");
+function routeHead(req: Request): Route | null {
+  const { pathname } = new URL(req.url);
+  const parts = pathname.split("/").filter(Boolean);
+  const head =
+    (parts.length === 2 && parts[0] === "webhook" ? parts[1] : null) ??
+      (parts.length === 4 &&
+          parts[0] === "functions" &&
+          parts[1] === "v1" &&
+          parts[2] === "webhook"
+        ? parts[3]
+        : null);
+  return head && ROUTES.has(head as Route) ? (head as Route) : null;
 }
 
 Deno.serve(async (req) => {
   const head = routeHead(req);
   if (head === "trigger") return await handleTrigger(req);
-  if (head === "telegram") return await handleTelegram(req);
+  if (head === "slack" && adapters.slack) {
+    return await bot.webhooks.slack(req, { waitUntil: EdgeRuntime.waitUntil });
+  }
+  if (head === "telegram" && adapters.telegram) {
+    return await bot.webhooks.telegram(req, {
+      waitUntil: EdgeRuntime.waitUntil,
+    });
+  }
+  if (head === "teams" && adapters.teams) {
+    return await bot.webhooks.teams(req, { waitUntil: EdgeRuntime.waitUntil });
+  }
+  if (head === "discord" && adapters.discord) {
+    return await bot.webhooks.discord(req, {
+      waitUntil: EdgeRuntime.waitUntil,
+    });
+  }
   logger.warn("webhook.route_not_found", { path: new URL(req.url).pathname });
   return textResponse("not found", { status: 404 });
 });
