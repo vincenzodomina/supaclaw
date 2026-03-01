@@ -578,6 +578,12 @@ on conflict (id) do nothing;
 -- Prevent schema-poisoning/search_path attacks: don't let PUBLIC create objects in `public`.
 revoke create on schema public from public;
 
+-- Allow Edge Functions (service_role) to use PGMQ internals.
+grant usage on schema pgmq to service_role;
+grant execute on all functions in schema pgmq to service_role;
+grant select, insert, update, delete on all tables in schema pgmq to service_role;
+grant usage, select, update on all sequences in schema pgmq to service_role;
+
 -- Restrict internal RPCs to backend-only (`service_role`).
 -- These functions are used by Edge Functions + cron and should not be callable via PostgREST.
 revoke execute on function public.enqueue_due_tasks() from public;
