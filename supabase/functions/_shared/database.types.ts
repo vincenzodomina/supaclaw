@@ -54,54 +54,6 @@ export type Database = {
         }
         Relationships: []
       }
-      jobs: {
-        Row: {
-          attempts: number
-          created_at: string
-          dedupe_key: string
-          id: number
-          last_error: string | null
-          locked_at: string | null
-          locked_by: string | null
-          max_attempts: number
-          payload: Json
-          run_at: string
-          status: string
-          type: Database["public"]["Enums"]["enum_job_type"]
-          updated_at: string
-        }
-        Insert: {
-          attempts?: number
-          created_at?: string
-          dedupe_key: string
-          id?: never
-          last_error?: string | null
-          locked_at?: string | null
-          locked_by?: string | null
-          max_attempts?: number
-          payload?: Json
-          run_at?: string
-          status?: string
-          type: Database["public"]["Enums"]["enum_job_type"]
-          updated_at?: string
-        }
-        Update: {
-          attempts?: number
-          created_at?: string
-          dedupe_key?: string
-          id?: never
-          last_error?: string | null
-          locked_at?: string | null
-          locked_by?: string | null
-          max_attempts?: number
-          payload?: Json
-          run_at?: string
-          status?: string
-          type?: Database["public"]["Enums"]["enum_job_type"]
-          updated_at?: string
-        }
-        Relationships: []
-      }
       memories: {
         Row: {
           content: string
@@ -286,7 +238,9 @@ export type Database = {
           description: string | null
           enabled_at: string | null
           id: number
+          last_enqueued_queue_msg_id: string | null
           last_error: string | null
+          last_processed_queue_msg_id: string | null
           last_run_at: string | null
           name: string
           next_run_at: string | null
@@ -307,7 +261,9 @@ export type Database = {
           description?: string | null
           enabled_at?: string | null
           id?: never
+          last_enqueued_queue_msg_id?: string | null
           last_error?: string | null
+          last_processed_queue_msg_id?: string | null
           last_run_at?: string | null
           name: string
           next_run_at?: string | null
@@ -328,7 +284,9 @@ export type Database = {
           description?: string | null
           enabled_at?: string | null
           id?: never
+          last_enqueued_queue_msg_id?: string | null
           last_error?: string | null
+          last_processed_queue_msg_id?: string | null
           last_run_at?: string | null
           name?: string
           next_run_at?: string | null
@@ -358,45 +316,7 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      claim_jobs: {
-        Args: {
-          p_lock_timeout_seconds?: number
-          p_locked_by: string
-          p_max_jobs?: number
-        }
-        Returns: {
-          attempts: number
-          created_at: string
-          dedupe_key: string
-          id: number
-          last_error: string | null
-          locked_at: string | null
-          locked_by: string | null
-          max_attempts: number
-          payload: Json
-          run_at: string
-          status: string
-          type: Database["public"]["Enums"]["enum_job_type"]
-          updated_at: string
-        }[]
-        SetofOptions: {
-          from: "*"
-          to: "jobs"
-          isOneToOne: false
-          isSetofReturn: true
-        }
-      }
       enqueue_due_tasks: { Args: never; Returns: number }
-      enqueue_job: {
-        Args: {
-          p_dedupe_key: string
-          p_max_attempts?: number
-          p_payload?: Json
-          p_run_at?: string
-          p_type: string
-        }
-        Returns: number
-      }
       hybrid_search: {
         Args: {
           filter_bucket?: string
@@ -414,11 +334,9 @@ export type Database = {
         }
         Returns: Json
       }
-      job_fail: {
-        Args: { p_error: string; p_job_id: number; p_retry_in_seconds?: number }
-        Returns: undefined
-      }
-      job_succeed: { Args: { p_job_id: number }; Returns: undefined }
+      queue_delete: { Args: { p_msg_id: string }; Returns: boolean }
+      queue_read: { Args: { p_qty: number; p_vt: number }; Returns: Json }
+      queue_send: { Args: { p_delay?: number; p_msg: Json }; Returns: string }
     }
     Enums: {
       enum_channel_provider:
@@ -434,12 +352,6 @@ export type Database = {
         | "mobile"
         | "desktop"
         | "api"
-      enum_job_type:
-        | "embed_memory"
-        | "embed_message"
-        | "embed_file"
-        | "trigger"
-        | "run_task"
       enum_memory_type: "summary" | "pinned_fact" | "note"
       enum_message_role: "assistant" | "user" | "system"
       enum_message_tool_status: "started" | "succeeded" | "failed"
@@ -586,13 +498,6 @@ export const Constants = {
         "mobile",
         "desktop",
         "api",
-      ],
-      enum_job_type: [
-        "embed_memory",
-        "embed_message",
-        "embed_file",
-        "trigger",
-        "run_task",
       ],
       enum_memory_type: ["summary", "pinned_fact", "note"],
       enum_message_role: ["assistant", "user", "system"],

@@ -18,6 +18,7 @@ import {
   verifySupabaseJwt,
 } from "../_shared/helpers.ts";
 import { logger } from "../_shared/logger.ts";
+import type { Tables } from "../_shared/database.types.ts";
 
 declare const EdgeRuntime: { waitUntil(promise: Promise<unknown>): void };
 
@@ -136,7 +137,7 @@ async function handleMessage(
   thread: Thread<Record<string, unknown>, unknown>,
   message: Message<unknown>,
 ) {
-  const channel = channelOf(thread.id);
+  const channel = channelOf(thread.id) as Tables<"sessions">["channel"];
 
   if (channel === "telegram") {
     const allowedId = Deno.env.get("TELEGRAM_ALLOWED_USER_ID")?.trim();
@@ -301,10 +302,6 @@ async function handleTrigger(req: Request) {
     );
   }
 
-  const dedupeKey =
-    typeof body?.dedupe_key === "string" && body.dedupe_key.trim()
-      ? body.dedupe_key
-      : `trigger:${crypto.randomUUID()}`;
   const payload = typeof body?.payload === "object" && body.payload
     ? body.payload
     : body;
@@ -317,12 +314,15 @@ async function handleTrigger(req: Request) {
     }
     : payload;
 
-  const { data, error } = await supabase.rpc("enqueue_job", {
-    p_dedupe_key: dedupeKey,
-    p_type: type,
-    p_payload: enrichedPayload,
-    p_run_at: new Date().toISOString(),
-    p_max_attempts: 5,
+  const msg =
+    typeof enrichedPayload === "object" && enrichedPayload !== null &&
+      !Array.isArray(enrichedPayload)
+      ? { ...(enrichedPayload as Record<string, unknown>), type }
+      : { type, payload: enrichedPayload };
+
+  const { data, error } = await supabase.rpc("queue_send", {
+    p_msg: msg,
+    p_delay: 0,
   });
 
   if (error) {
@@ -332,8 +332,9 @@ async function handleTrigger(req: Request) {
     });
     return jsonResponse({ ok: false, error: error.message }, { status: 500 });
   }
-  logger.info("webhook.trigger.enqueued", { type, jobId: data });
-  return jsonResponse({ ok: true, job_id: data });
+  const msgId = data;
+  logger.info("webhook.trigger.enqueued", { type, msgId });
+  return jsonResponse({ ok: true, msg_id: msgId });
 }
 
 // ── Router ──────────────────────────────────────────────────────────

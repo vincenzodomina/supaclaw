@@ -10,17 +10,33 @@ import { embedText } from "../_shared/embeddings.ts";
 import { updateTaskAfterRun } from "../_shared/tasks.ts";
 import { createChatBot } from "../_shared/bot.ts";
 import { runAgent } from "../_shared/agent.ts";
-import type { Database, Json, Tables } from "../_shared/database.types.ts";
+import type { Json, Tables } from "../_shared/database.types.ts";
 type SessionRow = Tables<"sessions">;
-
-type JobRow = Database["public"]["Functions"]["claim_jobs"]["Returns"][number];
-type RunTaskType = "reminder" | "agent_turn";
 
 const supabase = createServiceClient();
 const { bot, adapters } = createChatBot();
 
+const QUEUE_VT_SECONDS = 15 * 60; // long enough for LLM/tool calls
+const MAX_MESSAGES_PER_TICK = 3;
+
 const FALLBACK_REPLY =
   "I hit a temporary issue generating a response. Please try again in a moment.";
+
+type QueueMessageRecord = {
+  msg_id: unknown;
+  read_ct: unknown;
+  enqueued_at: unknown;
+  vt: unknown;
+  message: Json;
+};
+
+function asQueueMsgId(value: unknown): string | null {
+  const s = typeof value === "string" ? value.trim() : `${value ?? ""}`.trim();
+  if (!s) return null;
+  // Queue message IDs are bigint; keep as string to avoid precision loss.
+  if (!/^\d+$/.test(s)) return null;
+  return s;
+}
 
 function normalizeThreadId(channel: string, raw: string): string {
   const value = String(raw ?? "").trim();
@@ -47,69 +63,64 @@ function isAuthorized(req: Request) {
   return timingSafeEqual(expected, actual);
 }
 
-async function claimJobs(workerId: string, maxJobs = 3): Promise<JobRow[]> {
-  logger.debug("jobs.claim.start", { workerId, maxJobs });
-  const { data, error } = await supabase.rpc("claim_jobs", {
-    p_locked_by: workerId,
-    p_max_jobs: maxJobs,
-    p_lock_timeout_seconds: 300,
+async function readMessages(
+  workerId: string,
+  maxMessages = MAX_MESSAGES_PER_TICK,
+): Promise<QueueMessageRecord[]> {
+  logger.debug("queue.read.start", { workerId, maxMessages });
+  const { data, error } = await supabase.rpc("queue_read", {
+    p_vt: QUEUE_VT_SECONDS,
+    p_qty: maxMessages,
   });
-  if (error) throw new Error(`claim_jobs failed: ${error.message}`);
-  const jobs: JobRow[] = data ?? [];
-  logger.info("jobs.claim.done", { workerId, claimed: jobs.length });
-  return jobs;
+  if (error) throw new Error(`queue_read failed: ${error.message}`);
+  const messages = Array.isArray(data) ? (data as QueueMessageRecord[]) : [];
+  logger.info("queue.read.done", { workerId, claimed: messages.length });
+  return messages;
 }
 
-async function jobSucceed(jobId: number) {
-  const { error } = await supabase.rpc("job_succeed", { p_job_id: jobId });
-  if (error) throw new Error(`job_succeed failed: ${error.message}`);
+async function deleteMessage(msgId: string) {
+  const { error } = await supabase.rpc("queue_delete", { p_msg_id: msgId });
+  if (error) throw new Error(`queue_delete failed: ${error.message}`);
 }
 
-async function jobFail(
-  jobId: number,
-  errorMessage: string,
-  retryInSeconds = 60,
-) {
-  const { error } = await supabase.rpc("job_fail", {
-    p_job_id: jobId,
-    p_error: errorMessage,
-    p_retry_in_seconds: retryInSeconds,
-  });
-  if (error) throw new Error(`job_fail failed: ${error.message}`);
-}
-
-async function processRunTask(job: JobRow) {
-  if (
-    typeof job.payload !== "object" || job.payload === null ||
-    Array.isArray(job.payload)
-  ) {
-    throw new Error("Invalid run_task payload");
-  }
-
-  const payload = job.payload as Record<string, Json>;
+async function processRunTask(msgId: string, payload: Record<string, Json>) {
   const taskId = payload.task_id;
-  const prompt = payload.prompt;
   const sessionId = payload.session_id;
-  const rawTaskType = payload.task_type;
 
   if (
     typeof taskId !== "number" || !Number.isFinite(taskId) ||
-    typeof prompt !== "string" || !prompt.trim() ||
     typeof sessionId !== "string" || !sessionId.trim()
-  ) {
-    throw new Error("Invalid run_task payload");
+  ) throw new Error("Invalid run_task payload");
+
+  logger.info("msg.run_task.start", { msgId, taskId });
+
+  const { data: taskRow, error: taskErr } = await supabase
+    .from("tasks")
+    .select(
+      "id, name, description, prompt, schedule_type, run_at, cron_expr, timezone, include_session_history, session_id, last_processed_queue_msg_id",
+    )
+    .eq("id", taskId)
+    .maybeSingle();
+  if (taskErr) throw new Error(`Failed to load task: ${taskErr.message}`);
+  if (!taskRow) throw new Error(`Task not found: ${taskId}`);
+  if (taskRow?.last_processed_queue_msg_id != null) {
+    const last = String(taskRow.last_processed_queue_msg_id ?? "").trim();
+    if (last && last === msgId) {
+      logger.info("msg.run_task.skip_already_processed", { msgId, taskId });
+      return;
+    }
   }
 
-  const taskType: RunTaskType = rawTaskType === "agent_turn"
-    ? "agent_turn"
-    : "reminder";
+  const prompt = String(taskRow.prompt ?? "").trim();
+  if (!prompt) throw new Error(`Task ${taskId} has no prompt`);
 
-  logger.info("job.run_task.start", { jobId: job.id, taskId, taskType });
+  const resolvedSessionId = String(taskRow.session_id ?? sessionId).trim();
+  if (!resolvedSessionId) throw new Error("Task is missing session_id");
 
   const { data: session, error: sessErr } = await supabase
     .from("sessions")
     .select("id, channel, channel_chat_id")
-    .eq("id", sessionId)
+    .eq("id", resolvedSessionId)
     .maybeSingle();
   if (sessErr) throw new Error(`Failed to load session: ${sessErr.message}`);
   if (!session) throw new Error(`Session not found: ${sessionId}`);
@@ -121,38 +132,53 @@ async function processRunTask(job: JobRow) {
   }
 
   if (!adapters[channel]) {
-    logger.info("job.run_task.skip_missing_adapter", {
-      jobId: job.id,
+    logger.info("msg.run_task.skip_missing_adapter", {
+      msgId,
       taskId,
       channel,
     });
     return;
   }
 
-  const role = taskType === "agent_turn" ? "user" as const : "system" as const;
-  const content = taskType === "reminder" ? `Reminder: ${prompt}` : prompt;
+  const schedule = taskRow.schedule_type === "once"
+    ? `once @ ${taskRow.run_at ?? "unknown"}`
+    : taskRow.schedule_type === "recurring"
+    ? `recurring (${taskRow.cron_expr ?? "unknown"}) ${taskRow.timezone ?? "UTC"}`
+    : "unscheduled";
+
+  const content = [
+    "This is a scheduled task.",
+    `ID: ${taskId}`,
+    `Name: ${taskRow.name}`,
+    taskRow.description ? `Description: ${taskRow.description}` : null,
+    `Schedule: ${schedule}`,
+    "",
+    "Task:",
+    prompt,
+  ].filter(Boolean).join("\n");
 
   const result = await runAgent({
     channel,
     channelChatId: threadId,
     userMessage: {
       content,
-      role,
+      role: "system",
       channelUpdateId: `task:${taskId}:${Date.now()}`,
     },
+    includeSessionHistory: taskRow.include_session_history === true,
   });
 
   const reply = ((await result.text) ?? "").trim() || FALLBACK_REPLY;
   const adapter = bot.getAdapter(channel as never);
   await adapter.postMessage(threadId, reply);
 
-  await updateTaskAfterRun(taskId);
+  await updateTaskAfterRun(taskId, msgId);
 
-  logger.info("job.run_task.done", { jobId: job.id, taskId });
+  logger.info("msg.run_task.done", { msgId, taskId });
 }
 
-function processTrigger(job: JobRow) {
-  void job;
+function processTrigger(payload: Record<string, Json>) {
+  void payload;
 }
 
 type EmbedConfig = {
@@ -160,31 +186,35 @@ type EmbedConfig = {
   idKey: "memory_id" | "message_id" | "file_id";
 };
 
-const EMBED_CONFIG: Partial<Record<JobRow["type"], EmbedConfig>> = {
+type JobType =
+  | "run_task"
+  | "embed_memory"
+  | "embed_message"
+  | "embed_file"
+  | "trigger";
+
+const EMBED_CONFIG: Partial<Record<JobType, EmbedConfig>> = {
   embed_memory: { table: "memories", idKey: "memory_id" },
   embed_message: { table: "messages", idKey: "message_id" },
   embed_file: { table: "files", idKey: "file_id" },
 };
 
-async function processEmbed(job: JobRow, config: EmbedConfig) {
-  logger.info("job.embed.start", {
-    jobId: job.id,
-    type: job.type,
+async function processEmbed(
+  msgId: string,
+  jobType: JobType,
+  payload: Record<string, Json>,
+  config: EmbedConfig,
+) {
+  logger.info("msg.embed.start", {
+    msgId,
+    type: jobType,
     table: config.table,
   });
-  if (
-    typeof job.payload !== "object" || job.payload === null ||
-    Array.isArray(job.payload)
-  ) {
-    throw new Error(`Invalid ${job.type} payload`);
-  }
-
-  const payload = job.payload as Record<string, Json>;
   const rawId = payload[config.idKey];
   const id = config.idKey === "file_id"
     ? (typeof rawId === "string" && rawId.trim() ? rawId : null)
     : (typeof rawId === "number" && Number.isFinite(rawId) ? rawId : null);
-  if (id == null) throw new Error(`Invalid ${job.type} payload`);
+  if (id == null) throw new Error(`Invalid ${jobType} payload`);
 
   const { data: row, error: loadErr } = await supabase
     .from(config.table)
@@ -192,7 +222,7 @@ async function processEmbed(job: JobRow, config: EmbedConfig) {
     .eq("id", id)
     .maybeSingle();
   if (loadErr) {
-    throw new Error(`Failed to load ${job.type}: ${loadErr.message}`);
+    throw new Error(`Failed to load ${jobType}: ${loadErr.message}`);
   }
   if (!row) return;
 
@@ -207,18 +237,37 @@ async function processEmbed(job: JobRow, config: EmbedConfig) {
     .eq("id", id);
   if (updateErr) {
     throw new Error(
-      `Failed to update ${job.type} embedding: ${updateErr.message}`,
+      `Failed to update ${jobType} embedding: ${updateErr.message}`,
     );
   }
-  logger.info("job.embed.done", { jobId: job.id, type: job.type, id });
+  logger.info("msg.embed.done", { msgId, type: jobType, id });
 }
 
-async function processJob(job: JobRow) {
-  if (job.type === "run_task") return await processRunTask(job);
-  const embedConfig = EMBED_CONFIG[job.type];
-  if (embedConfig) return await processEmbed(job, embedConfig);
-  if (job.type === "trigger") return processTrigger(job);
-  throw new Error(`Unknown job type: ${job.type}`);
+function parsePayload(message: Json): Record<string, Json> {
+  if (typeof message !== "object" || message === null || Array.isArray(message)) {
+    throw new Error("Invalid queue message: expected object payload");
+  }
+  return message as Record<string, Json>;
+}
+
+async function processMessage(msgId: string, message: Json) {
+  const payload = parsePayload(message);
+  const type = typeof payload.type === "string" ? payload.type : "";
+  if (
+    type !== "run_task" &&
+    type !== "embed_memory" &&
+    type !== "embed_message" &&
+    type !== "embed_file" &&
+    type !== "trigger"
+  ) {
+    throw new Error(`Unknown job type: ${type}`);
+  }
+
+  const jobType = type as JobType;
+  if (jobType === "run_task") return await processRunTask(msgId, payload);
+  const embedConfig = EMBED_CONFIG[jobType];
+  if (embedConfig) return await processEmbed(msgId, jobType, payload, embedConfig);
+  if (jobType === "trigger") return processTrigger(payload);
 }
 
 Deno.serve(async (req) => {
@@ -232,39 +281,38 @@ Deno.serve(async (req) => {
   logger.info("worker.request.start", { workerId });
 
   try {
-    const jobs = await claimJobs(workerId, 3);
-    if (jobs.length === 0) {
+    const messages = await readMessages(workerId, MAX_MESSAGES_PER_TICK);
+    if (messages.length === 0) {
       logger.debug("worker.request.no_jobs", { workerId });
       return jsonResponse({ results: [] });
     }
 
-    const results: Array<{ jobId: number; ok: boolean; error?: string }> = [];
+    const results: Array<{ msgId: string; ok: boolean; error?: string }> = [];
 
-    for (const job of jobs) {
+    for (const msg of messages) {
       const jobStartedAt = Date.now();
-      logger.info("worker.job.start", {
-        workerId,
-        jobId: job.id,
-        type: job.type,
-      });
+      const msgId = asQueueMsgId((msg as QueueMessageRecord).msg_id);
+      if (msgId == null) {
+        logger.warn("worker.msg.skip_invalid_msg_id", { workerId });
+        continue;
+      }
+      logger.info("worker.msg.start", { workerId, msgId });
       try {
-        await processJob(job);
-        await jobSucceed(job.id);
-        results.push({ jobId: job.id, ok: true });
-        logger.info("worker.job.success", {
+        await processMessage(msgId, (msg as QueueMessageRecord).message);
+        await deleteMessage(msgId);
+        results.push({ msgId, ok: true });
+        logger.info("worker.msg.success", {
           workerId,
-          jobId: job.id,
-          type: job.type,
+          msgId,
           ms: Date.now() - jobStartedAt,
         });
       } catch (e) {
         const msg = e instanceof Error ? e.message : JSON.stringify(e);
-        await jobFail(job.id, msg, 60);
-        results.push({ jobId: job.id, ok: false, error: msg });
-        logger.error("worker.job.failed", {
+        // Do not delete on failure; message will re-appear after VT.
+        results.push({ msgId, ok: false, error: msg });
+        logger.error("worker.msg.failed", {
           workerId,
-          jobId: job.id,
-          type: job.type,
+          msgId,
           error: e,
           message: msg,
           ms: Date.now() - jobStartedAt,

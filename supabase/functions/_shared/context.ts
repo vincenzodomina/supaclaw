@@ -17,7 +17,7 @@ type MessageRow =
   >
   | { role: "system"; content: string };
 
-async function buildSystemPrompt(): Promise<string> {
+export async function buildSystemPrompt(): Promise<string> {
   const [agents, soul, identity, user, bootstrap, heartbeat, tools, memory] =
     await Promise.all([
       downloadTextFromWorkspace(".agents/AGENTS.md", { optional: true }),
@@ -92,7 +92,6 @@ export async function buildInputMessages({
       "role, content, file_id, tool_name, tool_result, tool_status, tool_error",
     )
     .eq("session_id", sessionId)
-    .in("role", ["user", "assistant"])
     .order("created_at", { ascending: false })
     .limit(latestMessagesCount);
   if (recentErr) {

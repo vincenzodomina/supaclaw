@@ -17,6 +17,8 @@ set -euo pipefail
 #
 # Usage:
 #   ./scripts/install.sh
+#   ./scripts/install.sh --dev   # fastlane dev defaults (skip most prompts)
+#   ./scripts/install.sh --help
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -27,6 +29,36 @@ WEBHOOK_SCRIPT="${REPO_ROOT}/scripts/set-local-telegram-webhook.sh"
 NGROK_HELPER="${REPO_ROOT}/scripts/ngrok-helper.sh"
 AGENTS_SEED_SCRIPT="${REPO_ROOT}/scripts/seed-agents-storage.sh"
 SOURCE_SEED_SCRIPT="${REPO_ROOT}/scripts/seed-source-code.sh"
+GITHUB_SOURCE_URL_DEFAULT="https://github.com/vincenzodomina/supaclaw"
+
+DEV_MODE="false"
+
+print_help() {
+  cat <<EOF
+Usage:
+  ./scripts/install.sh [--dev]
+
+Options:
+  --dev     Fastlane dev defaults (skip most prompts).
+  -h, --help  Show this help.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dev)
+      DEV_MODE="true"
+      shift
+      ;;
+    -h|--help)
+      print_help
+      exit 0
+      ;;
+    *)
+      die "Unknown argument: $1 (use --help)"
+      ;;
+  esac
+done
 
 if [[ ! -f "${NGROK_HELPER}" ]]; then
   printf "[install][error] Missing ngrok helper script: %s\n" "${NGROK_HELPER}" >&2
@@ -44,20 +76,41 @@ fi
 # shellcheck source=/dev/null
 source "${NGROK_HELPER}"
 
+COLOR_RESET=""
+COLOR_BOLD=""
+COLOR_DIM=""
+COLOR_CYAN=""
+COLOR_YELLOW=""
+COLOR_RED=""
+
+if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-}" != "dumb" ]]; then
+  COLOR_RESET=$'\033[0m'
+  COLOR_BOLD=$'\033[1m'
+  COLOR_DIM=$'\033[2m'
+  COLOR_CYAN=$'\033[36m'
+  COLOR_YELLOW=$'\033[33m'
+  COLOR_RED=$'\033[31m'
+fi
+
 log() {
-  printf "\n[install] %s\n" "$1"
+  if [[ "$1" =~ ^Step\ [0-9]+/[0-9]+\ -\  ]]; then
+    printf "\n%s%s[install] %s%s\n" "${COLOR_BOLD}" "${COLOR_CYAN}" "$1" "${COLOR_RESET}"
+    printf "%s%s────────────────────────────────────────────────────────────%s\n" "${COLOR_DIM}" "${COLOR_CYAN}" "${COLOR_RESET}"
+  else
+    printf "\n%s%s[install] %s%s\n" "${COLOR_BOLD}" "${COLOR_CYAN}" "$1" "${COLOR_RESET}"
+  fi
 }
 
 warn() {
-  printf "[install][warn] %s\n" "$1"
+  printf "%s%s[install][warn] %s%s\n" "${COLOR_YELLOW}" "${COLOR_BOLD}" "$1" "${COLOR_RESET}"
 }
 
-hint() {
-  printf "[install][hint] %s\n" "$1"
+info() {
+  printf "%s[install][info] %s%s\n" "${COLOR_DIM}" "$1" "${COLOR_RESET}"
 }
 
 die() {
-  printf "[install][error] %s\n" "$1" >&2
+  printf "%s%s[install][error] %s%s\n" "${COLOR_RED}" "${COLOR_BOLD}" "$1" "${COLOR_RESET}" >&2
   exit 1
 }
 
@@ -206,32 +259,35 @@ fi
 
 NGROK_TUNNEL_URL="$(ngrok_get_https_tunnel_url)"
 
-log "Status hint"
 if [[ "${SUPABASE_ALREADY_RUNNING}" == "true" ]]; then
-  hint "Supabase local stack: running"
+  info "Supabase local stack: running"
 else
-  hint "Supabase local stack: not running"
+  info "Supabase local stack: not running"
 fi
 if [[ "${FUNCTIONS_ALREADY_RUNNING}" == "true" ]]; then
-  hint "Edge functions serve: running (will default to skip starting again)"
+  info "Edge functions serve: running (will default to skip starting again)"
 else
-  hint "Edge functions serve: not running"
+  info "Edge functions serve: not running"
 fi
 if [[ -n "${NGROK_TUNNEL_URL}" ]]; then
-  hint "ngrok HTTPS tunnel: running at ${NGROK_TUNNEL_URL}"
+  info "ngrok HTTPS tunnel: running at ${NGROK_TUNNEL_URL}"
 else
-  hint "ngrok HTTPS tunnel: not detected"
+  info "ngrok HTTPS tunnel: not detected"
 fi
 
 log "Step 2/10 - Starting Supabase local services"
 if [[ "${SUPABASE_ALREADY_RUNNING}" == "true" ]]; then
-  if ask_yes_no "Supabase appears already running. Run 'supabase start' again?" "n"; then
+  if [[ "${DEV_MODE}" == "true" ]]; then
+    info "Skipping 'supabase start' because services are already up. (--dev)"
+  elif ask_yes_no "Supabase appears already running. Run 'supabase start' again?" "n"; then
     supabase start
   else
-    hint "Skipping 'supabase start' because services are already up."
+    info "Skipping 'supabase start' because services are already up."
   fi
 else
-  if ask_yes_no "Start Supabase local services now?" "y"; then
+  if [[ "${DEV_MODE}" == "true" ]]; then
+    supabase start
+  elif ask_yes_no "Start Supabase local services now?" "y"; then
     supabase start
   else
     die "Supabase must be running for the next steps. Re-run and start services."
@@ -241,39 +297,58 @@ fi
 log "Step 3/10 - Pushing database schema/migrations to local DB"
 supabase db push --local
 
-log "Step 4/10 - Configuring supabase/.env.local interactively"
+log "Step 4/10 - Configuring supabase/.env.local"
 if [[ ! -f "${ENV_EXAMPLE}" ]]; then
   die "Missing ${ENV_EXAMPLE}"
 fi
 
-if [[ ! -f "${ENV_LOCAL}" ]]; then
-  cp "${ENV_EXAMPLE}" "${ENV_LOCAL}"
-  printf "[install] Created %s from template.\n" "${ENV_LOCAL}"
+env_default="y"
+env_prompt="Configure supabase/.env.local now?"
+if [[ -f "${ENV_LOCAL}" ]]; then
+  env_default="n"
+  env_prompt="Configure supabase/.env.local now? (existing file detected)"
 fi
 
-prompt_env_var "SUPABASE_URL" "Supabase API URL used by local edge functions." "true" "false" "http://127.0.0.1:54321"
-prompt_env_var "SUPABASE_SERVICE_ROLE_KEY" "Service role key (required by workers/functions)." "true" "true"
-prompt_env_var "TELEGRAM_BOT_TOKEN" "Telegram bot token from BotFather." "true" "true"
-prompt_env_var "TELEGRAM_ALLOWED_USER_ID" "Telegram user id allowed to use the bot." "true" "false"
-prompt_env_var "TELEGRAM_WEBHOOK_SECRET" "Webhook verification secret (generate with openssl rand -hex 32)." "true" "true"
-prompt_env_var "WORKER_SECRET" "Worker secret for scheduled cron invocations." "true" "true"
-prompt_env_var "TRIGGER_WEBHOOK_SECRET" "Optional external trigger secret." "false" "true"
-prompt_env_var "WORKSPACE_BUCKET" "Workspace bucket name." "false" "false" "workspace"
+if [[ "${DEV_MODE}" == "true" ]]; then
+  if [[ ! -f "${ENV_LOCAL}" ]]; then
+    die "supabase/.env.local is missing; cannot skip env setup in --dev mode."
+  fi
+  info "Skipping supabase/.env.local setup (--dev; using existing file)."
+elif ask_yes_no "${env_prompt}" "${env_default}"; then
+  if [[ ! -f "${ENV_LOCAL}" ]]; then
+    cp "${ENV_EXAMPLE}" "${ENV_LOCAL}"
+    printf "[install] Created %s from template.\n" "${ENV_LOCAL}"
+  fi
 
-if ask_yes_no "Configure OpenAI provider variables now?" "y"; then
-  prompt_env_var "OPENAI_API_KEY" "OpenAI API key." "true" "true"
-  prompt_env_var "OPENAI_MODEL" "OpenAI model id." "true" "false" "gpt-4.1"
-fi
+  prompt_env_var "SUPABASE_URL" "Supabase API URL used by local edge functions." "true" "false" "http://127.0.0.1:54321"
+  prompt_env_var "SUPABASE_SERVICE_ROLE_KEY" "Service role key (required by workers/functions)." "true" "true"
+  prompt_env_var "TELEGRAM_BOT_TOKEN" "Telegram bot token from BotFather." "true" "true"
+  prompt_env_var "TELEGRAM_ALLOWED_USER_ID" "Telegram user id allowed to use the bot." "true" "false"
+  prompt_env_var "TELEGRAM_WEBHOOK_SECRET" "Webhook verification secret (generate with openssl rand -hex 32)." "true" "true"
+  prompt_env_var "WORKER_SECRET" "Worker secret for scheduled cron invocations." "true" "true"
+  prompt_env_var "TRIGGER_WEBHOOK_SECRET" "Optional external trigger secret." "false" "true"
+  prompt_env_var "WORKSPACE_BUCKET" "Workspace bucket name." "false" "false" "workspace"
 
-if ask_yes_no "Configure Anthropic provider variables now?" "n"; then
-  prompt_env_var "ANTHROPIC_API_KEY" "Anthropic API key." "true" "true"
-  prompt_env_var "ANTHROPIC_MODEL" "Anthropic model id." "true" "false" "claude-3-5-sonnet-latest"
-fi
+  if ask_yes_no "Configure OpenAI provider variables now?" "y"; then
+    prompt_env_var "OPENAI_API_KEY" "OpenAI API key." "true" "true"
+    prompt_env_var "OPENAI_MODEL" "OpenAI model id." "true" "false" "gpt-4.1"
+  fi
 
-if ask_yes_no "Configure AWS Bedrock provider variables now?" "n"; then
-  prompt_env_var "AWS_BEDROCK_ACCESS_KEY" "AWS Bedrock access key (from IAM console)." "true" "true"
-  prompt_env_var "AWS_BEDROCK_SECRET_ACCESS_KEY" "AWS Bedrock secret access key." "true" "true"
-  prompt_env_var "AWS_REGION" "AWS region for Bedrock." "true" "false" "us-east-1"
+  if ask_yes_no "Configure Anthropic provider variables now?" "n"; then
+    prompt_env_var "ANTHROPIC_API_KEY" "Anthropic API key." "true" "true"
+    prompt_env_var "ANTHROPIC_MODEL" "Anthropic model id." "true" "false" "claude-3-5-sonnet-latest"
+  fi
+
+  if ask_yes_no "Configure AWS Bedrock provider variables now?" "n"; then
+    prompt_env_var "AWS_BEDROCK_ACCESS_KEY" "AWS Bedrock access key (from IAM console)." "true" "true"
+    prompt_env_var "AWS_BEDROCK_SECRET_ACCESS_KEY" "AWS Bedrock secret access key." "true" "true"
+    prompt_env_var "AWS_REGION" "AWS region for Bedrock." "true" "false" "us-east-1"
+  fi
+else
+  if [[ ! -f "${ENV_LOCAL}" ]]; then
+    die "supabase/.env.local is missing; cannot skip env setup."
+  fi
+  info "Skipping supabase/.env.local setup (using existing file)."
 fi
 
 log "Step 5/10 - Seeding workspace .agents files to Supabase Storage"
@@ -284,50 +359,71 @@ bash "${AGENTS_SEED_SCRIPT}" \
   --source-dir "${REPO_ROOT}/workspace/.agents" \
   --workspace-bucket "${WORKSPACE_BUCKET_VALUE}"
 
-log "Step 6/10 - Optional: Seed project source code from GitHub to Supabase Storage"
-if ask_yes_no "Seed project source code from a GitHub repo into storage?" "n"; then
-  GITHUB_SOURCE_URL=""
-  read -r -p "GitHub repo URL [https://github.com/vincenzodomina/supaclaw]: " GITHUB_SOURCE_URL
-  GITHUB_SOURCE_URL="${GITHUB_SOURCE_URL:-https://github.com/vincenzodomina/supaclaw}"
-  bash "${SOURCE_SEED_SCRIPT}" "${GITHUB_SOURCE_URL}" \
+log "Step 6/10 - Seed project source code from GitHub to Supabase Storage"
+if [[ "${DEV_MODE}" == "true" ]]; then
+  bash "${SOURCE_SEED_SCRIPT}" "${GITHUB_SOURCE_URL_DEFAULT}" \
     --env-file "${ENV_LOCAL}" \
     --workspace-bucket "${WORKSPACE_BUCKET_VALUE}"
+else
+  if ask_yes_no "Seed project source code from a GitHub repo into storage?" "n"; then
+    GITHUB_SOURCE_URL=""
+    read -r -p "GitHub repo URL [${GITHUB_SOURCE_URL_DEFAULT}]: " GITHUB_SOURCE_URL
+    GITHUB_SOURCE_URL="${GITHUB_SOURCE_URL:-${GITHUB_SOURCE_URL_DEFAULT}}"
+    bash "${SOURCE_SEED_SCRIPT}" "${GITHUB_SOURCE_URL}" \
+      --env-file "${ENV_LOCAL}" \
+      --workspace-bucket "${WORKSPACE_BUCKET_VALUE}"
+  fi
 fi
 
 log "Step 7/10 - Installing Deno dependencies for edge functions"
 (cd "${REPO_ROOT}/supabase/functions/_shared" && deno install)
 
-log "Step 8/10 - Optional: Deploy local Vault secrets"
+log "Step 8/10 - Deploy local Vault secrets"
 if [[ -x "${VAULT_SCRIPT}" ]]; then
-  if ask_yes_no "Run Vault secret deployment now?" "y"; then
+  if [[ "${DEV_MODE}" == "true" ]]; then
+    "${VAULT_SCRIPT}"
+  elif ask_yes_no "Run Vault secret deployment now?" "y"; then
     "${VAULT_SCRIPT}"
   fi
 else
   warn "Vault script is missing or not executable: ${VAULT_SCRIPT}"
 fi
 
-log "Step 9/10 - Optional: Configure Telegram webhook (ngrok)"
+log "Step 9/10 - Configure Telegram webhook (ngrok)"
 if [[ -x "${WEBHOOK_SCRIPT}" ]]; then
-  webhook_default="n"
-  webhook_prompt="Run Telegram webhook helper now?"
-  if [[ -n "${NGROK_TUNNEL_URL}" ]]; then
-    webhook_prompt="Run Telegram webhook helper now? (ngrok already detected)"
-  fi
-  if ask_yes_no "${webhook_prompt}" "${webhook_default}"; then
-    "${WEBHOOK_SCRIPT}"
+  if [[ "${DEV_MODE}" == "true" ]]; then
+    info "Skipping Telegram webhook helper (--dev)."
+  else
+    webhook_default="n"
+    webhook_prompt="Run Telegram webhook helper now?"
+    if [[ -n "${NGROK_TUNNEL_URL}" ]]; then
+      webhook_prompt="Run Telegram webhook helper now? (ngrok already detected)"
+    fi
+    if ask_yes_no "${webhook_prompt}" "${webhook_default}"; then
+      "${WEBHOOK_SCRIPT}"
+    fi
   fi
 else
   warn "Webhook helper script is missing or not executable: ${WEBHOOK_SCRIPT}"
 fi
 
-log "Step 10/10 - Optional: Start local edge functions server"
+log "Step 10/10 - Start local edge functions server"
 functions_default="y"
 functions_prompt="Start supabase functions serve now? (This will keep this terminal occupied)"
 if [[ "${FUNCTIONS_ALREADY_RUNNING}" == "true" ]]; then
   functions_default="n"
   functions_prompt="Start supabase functions serve now? (Already detected running in another terminal)"
 fi
-if ask_yes_no "${functions_prompt}" "${functions_default}"; then
+if [[ "${DEV_MODE}" == "true" ]]; then
+  if [[ "${FUNCTIONS_ALREADY_RUNNING}" == "true" ]]; then
+    info "Skipping 'supabase functions serve' because it is already running. (--dev)"
+    printf "\n[install] Setup completed!\n"
+  else
+    supabase functions serve \
+      --env-file "supabase/.env.local" \
+      --no-verify-jwt
+  fi
+elif ask_yes_no "${functions_prompt}" "${functions_default}"; then
   supabase functions serve \
     --env-file "supabase/.env.local" \
     --no-verify-jwt

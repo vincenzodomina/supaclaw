@@ -5,7 +5,11 @@ create extension if not exists pgcrypto;
 create extension if not exists vector with schema extensions;
 create extension if not exists pg_net with schema extensions;
 create extension if not exists pg_cron;
+create extension if not exists pgmq;
 create extension if not exists supabase_vault cascade;
+
+-- Supabase schema apply may run with an empty search_path.
+set search_path = public, extensions;
 
 -- Enums
 create type enum_channel_provider as enum ('telegram', 'slack', 'teams', 'whatsapp', 'discord', 'imessage', 'phone', 'email', 'web', 'mobile', 'desktop', 'api');
@@ -13,8 +17,6 @@ create type enum_message_role as enum ('assistant', 'user', 'system');
 create type enum_message_type as enum ('text', 'tool-call', 'file');
 create type enum_message_tool_status as enum ('started', 'succeeded', 'failed');
 create type enum_memory_type as enum ('summary', 'pinned_fact', 'note');
-create type enum_job_type as enum ('embed_memory', 'embed_message', 'embed_file', 'trigger', 'run_task');
-create type enum_task_type as enum ('reminder', 'agent_turn', 'backlog');
 create type enum_schedule_type as enum ('once', 'recurring');
 
 -- Tables
@@ -112,28 +114,6 @@ create index if not exists memories_embedding_idx on memories using hnsw (embedd
 create index if not exists memories_type_idx on memories (type);
 create index if not exists memories_session_idx on memories (session_id);
 
-create table if not exists jobs (
-  id bigint generated always as identity primary key,
-  dedupe_key text not null,
-  status text not null check (status in ('queued','running','succeeded','failed')) default 'queued',
-  type enum_job_type not null,
-  run_at timestamptz not null default now(),
-  attempts int not null default 0,
-  max_attempts int not null default 5,
-  locked_at timestamptz,
-  locked_by text,
-  payload jsonb not null default '{}'::jsonb,
-  last_error text,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unique (dedupe_key)
-);
-
-alter table jobs enable row level security;
-
-create index if not exists jobs_due_idx 
-  on jobs (status, run_at, id);
-
 create table if not exists tasks (
   id bigint generated always as identity primary key,
   name text not null,
@@ -143,11 +123,15 @@ create table if not exists tasks (
   run_at timestamptz,
   cron_expr text,
   timezone text not null default 'UTC',
-  task_type enum_task_type not null default 'reminder',
+  include_session_history boolean not null default false,
   session_id uuid references sessions(id) on delete set null,
   enabled_at timestamptz default now(),
   next_run_at timestamptz,
   last_run_at timestamptz,
+  completed_at timestamptz,
+  -- Last message IDs observed in the `pgmq` queue for idempotency/observability.
+  last_enqueued_queue_msg_id text,
+  last_processed_queue_msg_id text,
   last_error text,
   run_count int not null default 0,
   created_at timestamptz not null default now(),
@@ -160,106 +144,53 @@ create index if not exists tasks_due_idx
   on tasks (enabled_at, next_run_at)
   where enabled_at is not null and next_run_at is not null;
 
--- Functions
-create or replace function enqueue_job(
-  p_dedupe_key text,
-  p_type text,
-  p_payload jsonb default '{}'::jsonb,
-  p_run_at timestamptz default now(),
-  p_max_attempts int default 5
-)
-returns bigint
+-- PGMQ queue (Supabase Queues)
+-- Single queue: `jobs` (created once during bootstrap).
+do $$
+begin
+  if not exists (select 1 from pgmq.list_queues() where queue_name = 'jobs') then
+    perform pgmq.create('jobs');
+  end if;
+end;
+$$;
+
+-- Minimal RPC wrappers for Edge Functions (PostgREST only exposes `public`).
+create or replace function public.queue_send(p_msg jsonb, p_delay int default 0)
+returns text
 language plpgsql
 as $$
 declare
-  v_job_id bigint;
+  v_msg_id bigint;
 begin
-  insert into jobs (dedupe_key, type, payload, run_at, max_attempts, updated_at)
-  values (p_dedupe_key, p_type::enum_job_type, p_payload, p_run_at, p_max_attempts, now())
-  on conflict (dedupe_key) do update
-    set
-      type = excluded.type,
-      payload = excluded.payload,
-      run_at = excluded.run_at,
-      max_attempts = excluded.max_attempts,
-      -- If a job is running, keep it running. Otherwise queue it.
-      status = case when jobs.status = 'running' then jobs.status else 'queued' end,
-      last_error = null,
-      updated_at = now();
-
-  select id into v_job_id from jobs where dedupe_key = p_dedupe_key;
-  return v_job_id;
+  select * into v_msg_id from pgmq.send('jobs', p_msg, p_delay);
+  return v_msg_id::text;
 end;
 $$;
 
--- Atomic claim (SKIP LOCKED)
-create or replace function claim_jobs(
-  p_locked_by text,
-  p_max_jobs int default 1,
-  p_lock_timeout_seconds int default 300
-)
-returns setof jobs
+create or replace function public.queue_read(p_vt int, p_qty int)
+returns jsonb
 language sql
 as $$
-with cte as (
-  select id
-  from jobs
-  where (
-      status = 'queued'
-      or (
-        status = 'running'
-        and locked_at is not null
-        and locked_at <= now() - make_interval(secs => greatest(p_lock_timeout_seconds, 30))
-      )
+select coalesce(
+  jsonb_agg(
+    jsonb_build_object(
+      'msg_id', m.msg_id::text,
+      'read_ct', m.read_ct,
+      'enqueued_at', m.enqueued_at,
+      'vt', m.vt,
+      'message', m.message
     )
-    and run_at <= now()
-    and attempts < max_attempts
-  order by run_at asc, id asc
-  for update skip locked
-  limit p_max_jobs
+  ),
+  '[]'::jsonb
 )
-update jobs j
-set
-  status = 'running',
-  locked_at = now(),
-  locked_by = p_locked_by,
-  attempts = j.attempts + 1,
-  updated_at = now()
-from cte
-where j.id = cte.id
-returning j.*;
+from pgmq.read('jobs', p_vt, p_qty) as m;
 $$;
 
--- Convenience helpers to finalize jobs
-create or replace function job_succeed(p_job_id bigint)
-returns void
+create or replace function public.queue_delete(p_msg_id text)
+returns boolean
 language sql
 as $$
-update jobs
-set
-  status='succeeded',
-  locked_at=null,
-  locked_by=null,
-  last_error=null,
-  updated_at=now()
-where id = p_job_id;
-$$;
-
-create or replace function job_fail(p_job_id bigint, p_error text, p_retry_in_seconds int default 60)
-returns void
-language plpgsql
-as $$
-begin
-  update jobs
-  set
-    status = case when attempts >= max_attempts then 'failed' else 'queued' end,
-    run_at = case when attempts >= max_attempts then run_at else now() + make_interval(secs => greatest(p_retry_in_seconds, 5)) end,
-    locked_at = null,
-    locked_by = null,
-    last_error = left(p_error, 4000),
-    updated_at = now()
-  where id = p_job_id;
-end;
+select pgmq.delete('jobs', p_msg_id::bigint);
 $$;
 
 -- Enqueue due tasks into the jobs queue.
@@ -271,6 +202,7 @@ as $$
 declare
   v_count int := 0;
   v_task record;
+  v_msg_id bigint;
 begin
   for v_task in
     select *
@@ -280,27 +212,27 @@ begin
       and next_run_at <= now()
     for update skip locked
   loop
-    perform enqueue_job(
-      p_dedupe_key := 'task:' || v_task.id || ':' || extract(epoch from v_task.next_run_at)::bigint::text,
-      p_type := 'run_task',
-      p_payload := jsonb_build_object(
+    select *
+    into v_msg_id
+    from pgmq.send(
+      'jobs',
+      jsonb_build_object(
+        'type', 'run_task',
         'task_id', v_task.id,
-        'task_type', v_task.task_type,
         'prompt', v_task.prompt,
         'session_id', v_task.session_id
       ),
-      p_run_at := now(),
-      p_max_attempts := 3
+      0
     );
 
     -- Clear next_run_at to prevent re-enqueue on the next cron tick.
     -- The worker recomputes it for recurring tasks after successful execution.
-    -- One-shot tasks also get disabled.
-    if v_task.schedule_type = 'once' then
-      update tasks set next_run_at = null, enabled_at = null, updated_at = now() where id = v_task.id;
-    else
-      update tasks set next_run_at = null, updated_at = now() where id = v_task.id;
-    end if;
+    update tasks
+    set
+      next_run_at = null,
+      last_enqueued_queue_msg_id = v_msg_id,
+      updated_at = now()
+    where id = v_task.id;
 
     v_count := v_count + 1;
   end loop;
@@ -335,10 +267,10 @@ returns trigger
 language plpgsql
 as $$
 declare
-  v_key text;
   v_key_prefix text := tg_argv[0];
   v_job_type text := tg_argv[1];
   v_payload_key text := tg_argv[2];
+  v_msg_id bigint;
 begin
   -- For message timeline rows: only embed actual text messages.
   if v_key_prefix = 'message' then
@@ -347,13 +279,15 @@ begin
     end if;
   end if;
 
-  v_key := v_key_prefix || ':embed:' || new.id::text;
-  perform public.enqueue_job(
-    p_dedupe_key => v_key,
-    p_type => v_job_type,
-    p_payload => jsonb_build_object(v_payload_key, new.id),
-    p_run_at => now(),
-    p_max_attempts => 20
+  select *
+  into v_msg_id
+  from pgmq.send(
+    'jobs',
+    jsonb_build_object(
+      'type', v_job_type,
+      v_payload_key, new.id
+    ),
+    0
   );
 
   return new;
@@ -632,22 +566,25 @@ on conflict (id) do nothing;
 -- Prevent schema-poisoning/search_path attacks: don't let PUBLIC create objects in `public`.
 revoke create on schema public from public;
 
+-- Allow Edge Functions (service_role) to use PGMQ internals.
+grant usage on schema pgmq to service_role;
+grant execute on all functions in schema pgmq to service_role;
+grant select, insert, update, delete on all tables in schema pgmq to service_role;
+grant usage, select, update on all sequences in schema pgmq to service_role;
+
 -- Restrict internal RPCs to backend-only (`service_role`).
 -- These functions are used by Edge Functions + cron and should not be callable via PostgREST.
-revoke execute on function public.enqueue_job(text, text, jsonb, timestamptz, int) from public;
-grant execute on function public.enqueue_job(text, text, jsonb, timestamptz, int) to service_role;
-
-revoke execute on function public.claim_jobs(text, int, int) from public;
-grant execute on function public.claim_jobs(text, int, int) to service_role;
-
-revoke execute on function public.job_succeed(bigint) from public;
-grant execute on function public.job_succeed(bigint) to service_role;
-
-revoke execute on function public.job_fail(bigint, text, int) from public;
-grant execute on function public.job_fail(bigint, text, int) to service_role;
-
 revoke execute on function public.enqueue_due_tasks() from public;
 grant execute on function public.enqueue_due_tasks() to service_role;
+
+revoke execute on function public.queue_send(jsonb, int) from public;
+grant execute on function public.queue_send(jsonb, int) to service_role;
+
+revoke execute on function public.queue_read(int, int) from public;
+grant execute on function public.queue_read(int, int) to service_role;
+
+revoke execute on function public.queue_delete(text) from public;
+grant execute on function public.queue_delete(text) to service_role;
 
 revoke execute on function public.enqueue_embedding_job() from public;
 grant execute on function public.enqueue_embedding_job() to service_role;

@@ -21,7 +21,7 @@ This document explains how SupaClaw works under the hood and how it differs from
 │  │             │  │              │  │          │  │
 │  │ • sessions  │  │ • workspace  │  │ • users  │  │
 │  │ • messages  │  │   /.agents/**│  │ • tokens │  │
-│  │ • jobs      │  │   /files/**  │  │          │  │
+│  │ • pgmq jobs │  │   /files/**  │  │          │  │
 │  │ • tasks     │  │              │  │          │  │
 │  └─────────────┘  └──────────────┘  └──────────┘  │
 │                                                   │
@@ -54,7 +54,7 @@ This document explains how SupaClaw works under the hood and how it differs from
 
 SupaClaw uses a hybrid processing model:
 - **Chat messages process inline** — the webhook calls the agent directly and streams the reply to the channel provider. No job queue in the chat path; latency stays low, code stays simple.
-- **Background work uses a DB job queue** — embeddings, scheduled tasks, and external triggers are enqueued as jobs. A cron-driven worker processes them with retries and backoff.
+- **Background work uses Supabase Queues (PGMQ)** — embeddings, scheduled tasks, and external triggers are enqueued into the `jobs` queue. A cron-driven worker pulls messages and deletes them on success (visibility timeout handles retries).
 
 Fast chat without a queue hop, plus durable retry semantics for background work that can fail.
 
@@ -62,7 +62,7 @@ The worker only calls the LLM when there are due jobs, so cron acts as a minimal
 
 ### Confirmed decisions (what we're building)
 - Inline chat: webhook processes messages directly (agent call + stream reply) using `EdgeRuntime.waitUntil()` for async background execution.
-- Background queue: embeddings, scheduled tasks, and triggers go through the `jobs` table with retry/backoff.
+- Background queue: embeddings, scheduled tasks, and triggers go through Supabase Queues (PGMQ) queue `jobs` (visibility timeout retries; delete = ack).
 - Always-on (like): Event-driven for chat + cron for scheduled tasks + minimal "heartbeat" (only checks for due jobs, no "think loop").
 - Sessions: 1 Telegram chat = 1 session (groups = multiple sessions), but only your Telegram user ID is allowed.
 - No commands in Telegram (yet).
@@ -76,8 +76,8 @@ The worker only calls the LLM when there are due jobs, so cron acts as a minimal
 - **Postgres (source of truth)**
   - `sessions`: one per conversation surface (Telegram chat)
   - `messages`: all inbound/outbound messages (append-only)
-  - `jobs`: queued units of work (run task, embed, trigger) — dedupe keys prevent duplicates, attempt tracking enables retries with backoff, rows are inspectable for debugging
-  - `tasks`: scheduled task definitions (one-shot reminders, recurring cron jobs, or unscheduled backlog items)
+  - `pgmq` queue `jobs`: queued units of work (run task, embed, trigger) — messages are durable in Postgres, claimed via visibility timeout, acknowledged by deletion
+  - `tasks`: scheduled task definitions (one-shot, recurring or even unscheduled backlog). When a task fires it always triggers an agent run with the task `prompt` as runtime input;
   - `memories`: store/read/search tools to manage context across sessions
   - `files`: metadata, vectors, relation to messages
 
@@ -99,7 +99,7 @@ The worker only calls the LLM when there are due jobs, so cron acts as a minimal
 - **Cron**
   - Runs every minute via pg_cron: first calls `enqueue_due_tasks()` to move due `tasks` into the `jobs` queue, then invokes `agent-worker` via pg_net.
   - Sole driver for scheduled tasks, embeddings, and triggers.
-  - One-shot tasks (`schedule_type='once'`) auto-disable after firing.
+  - One-shot tasks (`schedule_type='once'`) are marked completed after firing (`completed_at`), not deleted.
   - Recurring tasks (`schedule_type='recurring'`) get their `next_run_at` recomputed by the worker after each run (using croner for cron expression parsing).
   - Unscheduled tasks (no `schedule_type`) act as backlog items — tracked but never auto-fired.
 
@@ -110,18 +110,19 @@ The worker only calls the LLM when there are due jobs, so cron acts as a minimal
   3. Webhook returns `200 OK` immediately; agent processing runs in the background via `EdgeRuntime.waitUntil()`
   4. Agent starts a typing keepalive loop, composes prompt (SOUL + recent messages + retrieved memory), calls LLM, streams partial replies via Telegram draft edits, runs tools, finalizes reply, stops typing loop
 
-- **Scheduled task / reminder**
-  1. Agent (or user via chat) creates a `tasks` row using the `cron` tool (with schedule_type, run_at or cron_expr, and a prompt)
+- **Scheduled task**
+  1. Agent (or user via chat) creates a `tasks` row using the `cron` tool (with schedule_type, run_at or cron_expr, and a `prompt`)
   2. Every minute, `enqueue_due_tasks()` checks for tasks where `next_run_at <= now()`, enqueues a `job(type="run_task")`, and clears `next_run_at` to prevent double-fire
-  3. `agent-worker` claims the job, inserts the task prompt as a message in the bound session, generates an agent reply (with full tool access), delivers via channel provider
-  4. For recurring tasks, the worker recomputes `next_run_at` from the cron expression; for one-shot tasks, the task is disabled
+  3. `agent-worker` claims the job and runs the agent with an injected “scheduled task” header (task id/name/schedule metadata) + the task `prompt`
+  4. The scheduled run is **isolated by default** (no prior session history). If `include_session_history=true` on the task, the agent run includes recent session context.
+  5. For recurring tasks, the worker recomputes `next_run_at` from the cron expression; for one-shot tasks, the worker marks the task completed (`completed_at`)
 
 - **External trigger**
   - `webhook` (`/trigger`) creates jobs so external systems can enqueue deterministic work without "agent polling"
 
 
 
-## Data Flow
+## Data Flows
 
 ### Message Processing Flow
 
@@ -169,13 +170,16 @@ The worker only calls the LLM when there are due jobs, so cron acts as a minimal
 1. pg_cron triggers scheduled query (every minute)
    │
    ▼
-2. Checks due tasks table and enqueues a job to run task
+2. `enqueue_due_tasks()` selects due `tasks` (`next_run_at <= now()`), enqueues `job(type="run_task")`, and clears `next_run_at` (prevents double-fire)
    │
    ▼
 3. pg_net makes HTTP POST to `/functions/v1/agent-worker`
    │
    ▼
-4. `agent-worker` claims jobs and exits fast if no jobs are due
+4. `agent-worker` claims queued jobs and runs the agent with an injected “scheduled task” header + the task `prompt`. Runs are isolated by default.
+   │
+   ▼
+5. On success: recurring tasks recompute `next_run_at`; one-shot tasks set `completed_at`
 ```
 
 ## Tools
@@ -205,9 +209,9 @@ The worker only calls the LLM when there are due jobs, so cron acts as a minimal
     - Postgres-only: backed by `hybrid_search` over the `memories` table (FTS + pgvector); no local filesystem / no SQLite.
     - Defaults + knobs: `scope=auto` (global pinned facts + current-session summaries); supports `scope=current|all`, `types`, `max_results`, `match_count` (all clamped).
 - **`cron`**
-    - Let the agent manage reminders and scheduled jobs via the `tasks` table.
-    - Actions: `list|add|update|remove`; `list` excludes disabled tasks by default.
-    - Scheduling: `once` requires `run_at` (ISO-8601); `recurring` requires a 5-field `cron_expr` + optional IANA `timezone` (default `UTC`) and computes/updates `next_run_at`.
+    - Let the agent manage scheduled agent runs via the `tasks` table.
+    - Actions: `list|add|update|remove`; `list` excludes disabled and completed tasks by default.
+    - Scheduling: `once` requires `run_at` (ISO-8601); `recurring` requires a 5-field `cron_expr` + optional IANA `timezone` (default `UTC`) and computes/updates `next_run_at`. `prompt` is the runtime input passed to the scheduled agent run.
 - **`bash`**
     - Sandboxed Unix-like shell powered by [just-bash](https://github.com/nichochar/just-bash) — runs entirely in-process as a JS interpreter. No host OS shell, no child processes, no `execve`, for text/file processing beyond what `edit_file` or `web_fetch` cover (JSON wrangling, diffing, bulk transforms, piped commands)
     - Virtual Filesystem: Workspace files are imported on demand and explicitly exported back to Supabase Storage;
@@ -296,7 +300,7 @@ Dataflow + Persistence:
 | **Storage** | Local SQLite + filesystem | Supabase Storage + PostgreSQL |
 | **Cron** | Custom in-process scheduler (2000+ lines) | pg_cron + `tasks` table + `enqueue_due_tasks()` SQL function |
 | **Chat Processing** | Built-in agent loop | Inline in webhook via `EdgeRuntime.waitUntil()` |
-| **Background Jobs** | Built-in | DB job queue (`jobs` table) + cron-driven worker |
+| **Background Jobs** | Built-in | Supabase Queues (PGMQ) queue `jobs` + cron-driven worker |
 | **Files** | Local filesystem | Supabase Storage buckets |
 | **Config** | Local YAML | Supabase DB + env vars |
 | **Session State** | In-memory + SQLite | PostgreSQL |

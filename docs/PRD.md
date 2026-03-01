@@ -38,12 +38,10 @@ And of course the big one:
 
 ## Functional Requirements
 
-### Must Have
-
 - **Soul/Identity system** — customizable personality and behavior
-- **Always-on** — available 24/7 without babysitting a daemon, but as stateless server without relying on one device to be always on
+- **Always-on** — (heartbeat) available 24/7 without babysitting a daemon, but as stateless server without relying on one device to be always on
 - **File storage + attachments** — agent can persist, reference, and work with files in the cloud (uploaded by users or created by the agent)
-- **Scheduled tasks** — heartbeat, reminders, cron/background jobs - for scheduled health checks / proactive tasks - with reliable retries independent from hardware failure
+- **Scheduled tasks** — durable, timestamped/cron-scheduled *agent runs* with reliable retries independent from hardware failure
 - **Session persistence** — conversations survive across devices + parallel use possible
 - **Memory** — agent remembers context across sessions and across devices, with semantic search
 - **Core Tools Built-in** - See list of core tools in separate section
@@ -51,13 +49,8 @@ And of course the big one:
 - **Multi-channel** — same agent, different surfaces (Telegram, Slack, web, etc.)
 - **Portability** - Skills, Tools (CLI's), Sub-agents, Soul/Persona files - should use re-usable standards, importable and exportable
 - **Multimodal Document Understanding** - Uploading a file should feel like “dropping it into the conversation” — the agent must reliably see it immediately, remember it later, and be able to read/search its contents on demand. The same attachment must remain discoverable in subsequent turns and across devices (session persistence). For this the ingested file must be processed and persisted into LLM-ready format (page-wise images and OCR for non text-like files).
-
-### Nice to Have
-
 - **Triggers** - External event automation vs. wasting tokens on heartbeat inference
 - **One line quick install** — env vars only, no complex config
-- **Enterprise-ready path** — for "company as code" / digital employee use cases
-- **Web chat interface** — not just messaging apps
 
 ---
 
@@ -74,7 +67,7 @@ was found.
 - **`web_search`** — Search the web with automatic provider fallback; returns structured results.
 - **`web_fetch`** — Fetch and read the content of a URL as markdown, with SSRF protection.
 - **`memory_search`** — Recall prior decisions, preferences, facts, and context across sessions via hybrid search.
-- **`cron`** — Create, list, update, and remove scheduled tasks and reminders.
+- **`cron`** — Create, list, update, and remove scheduled agent tasks
 - **`bash`** — Run shell commands in a sandboxed virtual environment for text processing, data wrangling, and multi-step workflows.
 
 ---
@@ -107,6 +100,7 @@ was found.
 - **Boring tech wins** — Supabase is battle-tested, not bleeding edge
 - **80/20 rule** — optimize for online knowledge work, not local terminal hackery
 - **Simple vs. Configurable** - Simple things should be simple, complex things should be possible
+- **Enterprise-ready path** — for "company as code" / digital employee use cases
 
 ---
 
@@ -118,6 +112,7 @@ Frameworks and libraries and features decided to be used:
 - PostgreSQL — sessions, messages, config, memory
 - Storage buckets — files, uploads, assets
 - pg_cron — scheduled jobs without external scheduler
+- pgmq queues - background jobs with guaranteed "exactly once" delivery / durability
 - Edge Functions — Running the agent and future extensibility
 - Row Level Security — multi-tenant ready if needed
 - Analytics & Logs - Full observability built-in
