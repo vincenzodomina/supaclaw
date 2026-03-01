@@ -3,7 +3,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
-import { buildInputMessages } from "./context.ts";
+import { buildInputMessages, buildSystemPrompt } from "./context.ts";
 import { createAllTools } from "./tools/index.ts";
 import { getConfigNumber, getConfigString } from "./helpers.ts";
 import { logger } from "./logger.ts";
@@ -87,6 +87,7 @@ export async function runAgent({
   channelChatId,
   userMessage,
   inboundId: existingInboundId,
+  includeSessionHistory = true,
   provider,
   model,
   maxSteps = getConfigNumber("agent.max_steps") ?? 25,
@@ -102,6 +103,7 @@ export async function runAgent({
     fileId?: string;
   };
   inboundId?: number;
+  includeSessionHistory?: boolean;
   provider?: LLMProvider;
   model?: string;
   maxSteps?: number;
@@ -211,7 +213,12 @@ export async function runAgent({
   }
 
   // 4. Build context and stream
-  const messages = await buildInputMessages({ sessionId });
+  const messages = includeSessionHistory
+    ? await buildInputMessages({ sessionId })
+    : [
+      { role: "system" as const, content: await buildSystemPrompt() },
+      ...(userMessage ? [{ role: userMessage.role ?? "user", content: userMessage.content }] : []),
+    ];
   const toolState = new Map<string, { rowId: number; startedAt: number }>();
 
   const result = streamText({
@@ -226,7 +233,7 @@ export async function runAgent({
         const { data, error } = await supabase.from("messages").insert({
           session_id: sessionId,
           reply_to_message_id: inboundId,
-          role: "system",
+          role: "assistant",
           type: "tool-call",
           content: JSON.stringify(args),
           tool_name: chunk.toolName,

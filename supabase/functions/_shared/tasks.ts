@@ -29,7 +29,7 @@ export async function updateTaskAfterRun(
     const next = computeNextRun(task.cron_expr, task.timezone ?? "UTC");
     patch.next_run_at = next?.toISOString() ?? null;
   } else if (task.schedule_type === "once") {
-    patch.enabled_at = null;
+    patch.completed_at = new Date().toISOString();
   }
 
   await supabase.from("tasks").update(patch).eq("id", taskId);

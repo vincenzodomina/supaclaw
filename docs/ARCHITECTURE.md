@@ -77,7 +77,7 @@ The worker only calls the LLM when there are due jobs, so cron acts as a minimal
   - `sessions`: one per conversation surface (Telegram chat)
   - `messages`: all inbound/outbound messages (append-only)
   - `pgmq` queue `jobs`: queued units of work (run task, embed, trigger) — messages are durable in Postgres, claimed via visibility timeout, acknowledged by deletion
-  - `tasks`: scheduled task definitions (one-shot reminders, recurring cron jobs, or unscheduled backlog items)
+  - `tasks`: scheduled task definitions (one-shot, recurring or even unscheduled backlog). When a task fires it always triggers an agent run with the task `prompt` as runtime input;
   - `memories`: store/read/search tools to manage context across sessions
   - `files`: metadata, vectors, relation to messages
 
@@ -99,7 +99,7 @@ The worker only calls the LLM when there are due jobs, so cron acts as a minimal
 - **Cron**
   - Runs every minute via pg_cron: first calls `enqueue_due_tasks()` to move due `tasks` into the `jobs` queue, then invokes `agent-worker` via pg_net.
   - Sole driver for scheduled tasks, embeddings, and triggers.
-  - One-shot tasks (`schedule_type='once'`) auto-disable after firing.
+  - One-shot tasks (`schedule_type='once'`) are marked completed after firing (`completed_at`), not deleted.
   - Recurring tasks (`schedule_type='recurring'`) get their `next_run_at` recomputed by the worker after each run (using croner for cron expression parsing).
   - Unscheduled tasks (no `schedule_type`) act as backlog items — tracked but never auto-fired.
 
@@ -110,11 +110,12 @@ The worker only calls the LLM when there are due jobs, so cron acts as a minimal
   3. Webhook returns `200 OK` immediately; agent processing runs in the background via `EdgeRuntime.waitUntil()`
   4. Agent starts a typing keepalive loop, composes prompt (SOUL + recent messages + retrieved memory), calls LLM, streams partial replies via Telegram draft edits, runs tools, finalizes reply, stops typing loop
 
-- **Scheduled task / reminder**
-  1. Agent (or user via chat) creates a `tasks` row using the `cron` tool (with schedule_type, run_at or cron_expr, and a prompt)
+- **Scheduled task**
+  1. Agent (or user via chat) creates a `tasks` row using the `cron` tool (with schedule_type, run_at or cron_expr, and a `prompt`)
   2. Every minute, `enqueue_due_tasks()` checks for tasks where `next_run_at <= now()`, enqueues a `job(type="run_task")`, and clears `next_run_at` to prevent double-fire
-  3. `agent-worker` claims the job, inserts the task prompt as a message in the bound session, generates an agent reply (with full tool access), delivers via channel provider
-  4. For recurring tasks, the worker recomputes `next_run_at` from the cron expression; for one-shot tasks, the task is disabled
+  3. `agent-worker` claims the job and runs the agent with an injected “scheduled task” header (task id/name/schedule metadata) + the task `prompt`
+  4. The scheduled run is **isolated by default** (no prior session history). If `include_session_history=true` on the task, the agent run includes recent session context.
+  5. For recurring tasks, the worker recomputes `next_run_at` from the cron expression; for one-shot tasks, the worker marks the task completed (`completed_at`)
 
 - **External trigger**
   - `webhook` (`/trigger`) creates jobs so external systems can enqueue deterministic work without "agent polling"
@@ -207,7 +208,7 @@ The worker only calls the LLM when there are due jobs, so cron acts as a minimal
 - **`cron`**
     - Let the agent manage reminders and scheduled jobs via the `tasks` table.
     - Actions: `list|add|update|remove`; `list` excludes disabled tasks by default.
-    - Scheduling: `once` requires `run_at` (ISO-8601); `recurring` requires a 5-field `cron_expr` + optional IANA `timezone` (default `UTC`) and computes/updates `next_run_at`.
+    - Scheduling: `once` requires `run_at` (ISO-8601); `recurring` requires a 5-field `cron_expr` + optional IANA `timezone` (default `UTC`) and computes/updates `next_run_at`. `prompt` is the runtime input.
 - **`bash`**
     - Sandboxed Unix-like shell powered by [just-bash](https://github.com/nichochar/just-bash) — runs entirely in-process as a JS interpreter. No host OS shell, no child processes, no `execve`, for text/file processing beyond what `edit_file` or `web_fetch` cover (JSON wrangling, diffing, bulk transforms, piped commands)
     - Virtual Filesystem: Workspace files are imported on demand and explicitly exported back to Supabase Storage;

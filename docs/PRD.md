@@ -39,9 +39,9 @@ And of course the big one:
 ## Functional Requirements
 
 - **Soul/Identity system** — customizable personality and behavior
-- **Always-on** — available 24/7 without babysitting a daemon, but as stateless server without relying on one device to be always on
+- **Always-on** — (heartbeat) available 24/7 without babysitting a daemon, but as stateless server without relying on one device to be always on
 - **File storage + attachments** — agent can persist, reference, and work with files in the cloud (uploaded by users or created by the agent)
-- **Scheduled tasks** — heartbeat, reminders, cron/background jobs - for scheduled health checks / proactive tasks - with reliable retries independent from hardware failure
+- **Scheduled tasks** — durable, timestamped/cron-scheduled *agent runs* with reliable retries independent from hardware failure
 - **Session persistence** — conversations survive across devices + parallel use possible
 - **Memory** — agent remembers context across sessions and across devices, with semantic search
 - **Core Tools Built-in** - See list of core tools in separate section
@@ -67,7 +67,7 @@ was found.
 - **`web_search`** — Search the web with automatic provider fallback; returns structured results.
 - **`web_fetch`** — Fetch and read the content of a URL as markdown, with SSRF protection.
 - **`memory_search`** — Recall prior decisions, preferences, facts, and context across sessions via hybrid search.
-- **`cron`** — Create, list, update, and remove scheduled tasks and reminders.
+- **`cron`** — Create, list, update, and remove scheduled agent tasks
 - **`bash`** — Run shell commands in a sandboxed virtual environment for text processing, data wrangling, and multi-step workflows.
 
 ---

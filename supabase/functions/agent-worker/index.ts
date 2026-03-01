@@ -13,8 +13,6 @@ import { runAgent } from "../_shared/agent.ts";
 import type { Json, Tables } from "../_shared/database.types.ts";
 type SessionRow = Tables<"sessions">;
 
-type RunTaskType = "reminder" | "agent_turn";
-
 const supabase = createServiceClient();
 const { bot, adapters } = createChatBot();
 
@@ -87,28 +85,24 @@ async function deleteMessage(msgId: string) {
 
 async function processRunTask(msgId: string, payload: Record<string, Json>) {
   const taskId = payload.task_id;
-  const prompt = payload.prompt;
   const sessionId = payload.session_id;
-  const rawTaskType = payload.task_type;
 
   if (
     typeof taskId !== "number" || !Number.isFinite(taskId) ||
-    typeof prompt !== "string" || !prompt.trim() ||
     typeof sessionId !== "string" || !sessionId.trim()
   ) throw new Error("Invalid run_task payload");
 
-  const taskType: RunTaskType = rawTaskType === "agent_turn"
-    ? "agent_turn"
-    : "reminder";
-
-  logger.info("msg.run_task.start", { msgId, taskId, taskType });
+  logger.info("msg.run_task.start", { msgId, taskId });
 
   const { data: taskRow, error: taskErr } = await supabase
     .from("tasks")
-    .select("id, last_processed_queue_msg_id")
+    .select(
+      "id, name, description, prompt, schedule_type, run_at, cron_expr, timezone, include_session_history, session_id, last_processed_queue_msg_id",
+    )
     .eq("id", taskId)
     .maybeSingle();
   if (taskErr) throw new Error(`Failed to load task: ${taskErr.message}`);
+  if (!taskRow) throw new Error(`Task not found: ${taskId}`);
   if (taskRow?.last_processed_queue_msg_id != null) {
     const last = String(taskRow.last_processed_queue_msg_id ?? "").trim();
     if (last && last === msgId) {
@@ -117,10 +111,16 @@ async function processRunTask(msgId: string, payload: Record<string, Json>) {
     }
   }
 
+  const prompt = String(taskRow.prompt ?? "").trim();
+  if (!prompt) throw new Error(`Task ${taskId} has no prompt`);
+
+  const resolvedSessionId = String(taskRow.session_id ?? sessionId).trim();
+  if (!resolvedSessionId) throw new Error("Task is missing session_id");
+
   const { data: session, error: sessErr } = await supabase
     .from("sessions")
     .select("id, channel, channel_chat_id")
-    .eq("id", sessionId)
+    .eq("id", resolvedSessionId)
     .maybeSingle();
   if (sessErr) throw new Error(`Failed to load session: ${sessErr.message}`);
   if (!session) throw new Error(`Session not found: ${sessionId}`);
@@ -140,17 +140,32 @@ async function processRunTask(msgId: string, payload: Record<string, Json>) {
     return;
   }
 
-  const role = taskType === "agent_turn" ? "user" as const : "system" as const;
-  const content = taskType === "reminder" ? `Reminder: ${prompt}` : prompt;
+  const schedule = taskRow.schedule_type === "once"
+    ? `once @ ${taskRow.run_at ?? "unknown"}`
+    : taskRow.schedule_type === "recurring"
+    ? `recurring (${taskRow.cron_expr ?? "unknown"}) ${taskRow.timezone ?? "UTC"}`
+    : "unscheduled";
+
+  const content = [
+    "This is a scheduled task.",
+    `ID: ${taskId}`,
+    `Name: ${taskRow.name}`,
+    taskRow.description ? `Description: ${taskRow.description}` : null,
+    `Schedule: ${schedule}`,
+    "",
+    "Task:",
+    prompt,
+  ].filter(Boolean).join("\n");
 
   const result = await runAgent({
     channel,
     channelChatId: threadId,
     userMessage: {
       content,
-      role,
+      role: "system",
       channelUpdateId: `task:${taskId}:${Date.now()}`,
     },
+    includeSessionHistory: taskRow.include_session_history === true,
   });
 
   const reply = ((await result.text) ?? "").trim() || FALLBACK_REPLY;

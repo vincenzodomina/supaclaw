@@ -18,18 +18,20 @@ type CronArgs = {
   run_at?: string;
   cron_expr?: string;
   timezone?: string;
-  task_type?: "reminder" | "agent_turn";
   prompt?: string;
+  include_session_history?: boolean;
   enabled?: boolean;
   id?: number;
   include_disabled?: boolean;
+  include_completed?: boolean;
 };
 
 async function listTasks(args: CronArgs) {
   let query = supabase
     .from("tasks")
-    .select("id, name, description, prompt, schedule_type, run_at, cron_expr, timezone, task_type, enabled_at, next_run_at, last_run_at, last_error, run_count, created_at");
+    .select("id, name, description, prompt, schedule_type, run_at, cron_expr, timezone, include_session_history, enabled_at, completed_at, next_run_at, last_run_at, last_error, run_count, created_at");
   if (!args.include_disabled) query = query.not("enabled_at", "is", null);
+  if (!args.include_completed) query = query.is("completed_at", null);
   const { data, error } = await query.order("next_run_at", { ascending: true, nullsFirst: false });
   if (error) throw new Error(error.message);
   return { tasks: data };
@@ -63,7 +65,7 @@ async function addTask(sessionId: string, args: CronArgs) {
       run_at: args.schedule_type === "once" ? args.run_at : null,
       cron_expr: args.schedule_type === "recurring" ? args.cron_expr : null,
       timezone: args.timezone || "UTC",
-      task_type: args.task_type || "reminder",
+      include_session_history: args.include_session_history === true,
       session_id: sessionId,
       enabled_at: args.enabled === false ? null : new Date().toISOString(),
       next_run_at: nextRunAt,
@@ -90,7 +92,9 @@ async function updateTask(args: CronArgs) {
   if (args.name !== undefined) patch.name = args.name.trim();
   if (args.description !== undefined) patch.description = args.description?.trim() || null;
   if (args.prompt !== undefined) patch.prompt = args.prompt.trim();
-  if (args.task_type !== undefined) patch.task_type = args.task_type;
+  if (args.include_session_history !== undefined) {
+    patch.include_session_history = args.include_session_history === true;
+  }
   if (args.enabled !== undefined) patch.enabled_at = args.enabled ? new Date().toISOString() : null;
   if (args.timezone !== undefined) patch.timezone = args.timezone;
   if (args.schedule_type !== undefined) patch.schedule_type = args.schedule_type || null;
@@ -142,6 +146,10 @@ export function createCronTool(sessionId: string) {
     description: [
       "Manage tasks: reminders, scheduled jobs, and backlog items.",
       "",
+      "FIELDS:",
+      "- prompt: What gets executed at runtime (it becomes the agent input when the task fires).",
+      "- description: Human-readable context only (for inspecting tasks); not the runtime input.",
+      "",
       "ACTIONS:",
       "- list: List tasks (optional: include_disabled to show disabled tasks too)",
       "- add: Create a task (requires: name, prompt; schedule is optional)",
@@ -152,11 +160,10 @@ export function createCronTool(sessionId: string) {
       '- One-shot: set schedule_type="once" and run_at to an ISO-8601 timestamp.',
       '- Recurring: set schedule_type="recurring" and cron_expr to a 5-field cron expression, with optional timezone (default UTC).',
       "",
-      "TASK TYPES:",
-      "- reminder: Sends the prompt as a reminder into the current conversation.",
-      "- agent_turn: Runs the agent with the prompt as a background task.",
+      "HISTORY:",
+      "- include_session_history (default false): when true, the scheduled agent run includes recent session history; otherwise it runs in isolation.",
       "",
-      "DEFAULTS: task_type=reminder, timezone=UTC, enabled=true (enabled_at is set automatically).",
+      "DEFAULTS: include_session_history=false, timezone=UTC, enabled=true (enabled_at is set automatically).",
       "ISO timestamps without a timezone offset are treated as UTC.",
       "Cron expressions use standard 5-field format: minute hour day month weekday.",
     ].join("\n"),
@@ -178,15 +185,16 @@ export function createCronTool(sessionId: string) {
         run_at: { type: "string", description: "ISO-8601 timestamp for once schedules." },
         cron_expr: { type: "string", description: "5-field cron expression for recurring schedules." },
         timezone: { type: "string", description: "IANA timezone for cron_expr (default UTC)." },
-        task_type: {
-          type: "string",
-          enum: ["reminder", "agent_turn"],
-          description: "What happens when the task fires (default reminder).",
-        },
         prompt: { type: "string", description: "The text/prompt for the task." },
+        include_session_history: {
+          type: "boolean",
+          description:
+            "When true, scheduled run includes recent session history; default false (isolated).",
+        },
         enabled: { type: "boolean", description: "Enable or disable the task." },
         id: { type: "number", description: "Task ID (required for update/remove)." },
         include_disabled: { type: "boolean", description: "Include disabled tasks in list results." },
+        include_completed: { type: "boolean", description: "Include completed one-shot tasks in list results." },
       },
       required: ["action"],
       additionalProperties: false,

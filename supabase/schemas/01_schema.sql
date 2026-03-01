@@ -17,7 +17,6 @@ create type enum_message_role as enum ('assistant', 'user', 'system');
 create type enum_message_type as enum ('text', 'tool-call', 'file');
 create type enum_message_tool_status as enum ('started', 'succeeded', 'failed');
 create type enum_memory_type as enum ('summary', 'pinned_fact', 'note');
-create type enum_task_type as enum ('reminder', 'agent_turn', 'backlog');
 create type enum_schedule_type as enum ('once', 'recurring');
 
 -- Tables
@@ -124,11 +123,12 @@ create table if not exists tasks (
   run_at timestamptz,
   cron_expr text,
   timezone text not null default 'UTC',
-  task_type enum_task_type not null default 'reminder',
+  include_session_history boolean not null default false,
   session_id uuid references sessions(id) on delete set null,
   enabled_at timestamptz default now(),
   next_run_at timestamptz,
   last_run_at timestamptz,
+  completed_at timestamptz,
   -- Last message IDs observed in the `pgmq` queue for idempotency/observability.
   last_enqueued_queue_msg_id text,
   last_processed_queue_msg_id text,
@@ -219,7 +219,6 @@ begin
       jsonb_build_object(
         'type', 'run_task',
         'task_id', v_task.id,
-        'task_type', v_task.task_type,
         'prompt', v_task.prompt,
         'session_id', v_task.session_id
       ),
@@ -228,23 +227,12 @@ begin
 
     -- Clear next_run_at to prevent re-enqueue on the next cron tick.
     -- The worker recomputes it for recurring tasks after successful execution.
-    -- One-shot tasks also get disabled.
-    if v_task.schedule_type = 'once' then
-      update tasks
-      set
-        next_run_at = null,
-        enabled_at = null,
-        last_enqueued_queue_msg_id = v_msg_id,
-        updated_at = now()
-      where id = v_task.id;
-    else
-      update tasks
-      set
-        next_run_at = null,
-        last_enqueued_queue_msg_id = v_msg_id,
-        updated_at = now()
-      where id = v_task.id;
-    end if;
+    update tasks
+    set
+      next_run_at = null,
+      last_enqueued_queue_msg_id = v_msg_id,
+      updated_at = now()
+    where id = v_task.id;
 
     v_count := v_count + 1;
   end loop;
