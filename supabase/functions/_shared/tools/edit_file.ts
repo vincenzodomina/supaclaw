@@ -1,6 +1,7 @@
 import { jsonSchema, tool } from "ai";
 import {
-  downloadTextFromWorkspace,
+  decodeUtf8,
+  downloadFile,
   uploadFile,
 } from "../storage.ts";
 
@@ -44,8 +45,9 @@ export const editFileTool = tool({
     additionalProperties: false,
   }),
   execute: async ({ path, edits }) => {
-    const current = await downloadTextFromWorkspace(path, { optional: true });
-    if (current === null) throw new Error(`File not found: ${path}`);
+    const file = await downloadFile(path, { optional: true });
+    if (file === null) throw new Error(`File not found: ${path}`);
+    const current = decodeUtf8(file);
 
     let next = current;
     const replacements: number[] = [];

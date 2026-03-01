@@ -1,33 +1,45 @@
 import { createServiceClient } from "../_shared/supabase.ts";
 import { buildSkillsInstructionsBlock } from "./skills.ts";
-import { downloadTextFromWorkspace } from "./storage.ts";
+import { decodeUtf8, downloadFile } from "./storage.ts";
 import { getConfigNumber } from "./helpers.ts";
 import type { Tables } from "./database.types.ts";
 
 type MessageRow =
-  | Pick<
-    Tables<"messages">,
-    | "role"
-    | "content"
-    | "file_id"
-    | "tool_name"
-    | "tool_result"
-    | "tool_status"
-    | "tool_error"
-  >
-  | { role: "system"; content: string };
+  & Pick<Tables<"messages">, "role" | "content">
+  & Partial<
+    Pick<
+      Tables<"messages">,
+      "file_id" | "tool_name" | "tool_result" | "tool_status" | "tool_error"
+    >
+  >;
+
+type TimelineRow = Pick<
+  Tables<"messages">,
+  | "role"
+  | "type"
+  | "content"
+  | "file_id"
+  | "tool_name"
+  | "tool_result"
+  | "tool_status"
+  | "tool_error"
+>;
 
 export async function buildSystemPrompt(): Promise<string> {
+  const readOptionalText = async (path: string) => {
+    const file = await downloadFile(path, { optional: true });
+    return file ? decodeUtf8(file) : null;
+  };
   const [agents, soul, identity, user, bootstrap, heartbeat, tools, memory] =
     await Promise.all([
-      downloadTextFromWorkspace(".agents/AGENTS.md", { optional: true }),
-      downloadTextFromWorkspace(".agents/SOUL.md", { optional: true }),
-      downloadTextFromWorkspace(".agents/IDENTITY.md", { optional: true }),
-      downloadTextFromWorkspace(".agents/USER.md", { optional: true }),
-      downloadTextFromWorkspace(".agents/BOOTSTRAP.md", { optional: true }),
-      downloadTextFromWorkspace(".agents/HEARTBEAT.md", { optional: true }),
-      downloadTextFromWorkspace(".agents/TOOLS.md", { optional: true }),
-      downloadTextFromWorkspace(".agents/MEMORY.md", { optional: true }),
+      readOptionalText(".agents/AGENTS.md"),
+      readOptionalText(".agents/SOUL.md"),
+      readOptionalText(".agents/IDENTITY.md"),
+      readOptionalText(".agents/USER.md"),
+      readOptionalText(".agents/BOOTSTRAP.md"),
+      readOptionalText(".agents/HEARTBEAT.md"),
+      readOptionalText(".agents/TOOLS.md"),
+      readOptionalText(".agents/MEMORY.md"),
     ]);
 
   const parts: string[] = [];
@@ -89,7 +101,7 @@ export async function buildInputMessages({
   const { data: recent, error: recentErr } = await supabase
     .from("messages")
     .select(
-      "role, content, file_id, tool_name, tool_result, tool_status, tool_error",
+      "role, type, content, file_id, tool_name, tool_result, tool_status, tool_error",
     )
     .eq("session_id", sessionId)
     .order("created_at", { ascending: false })
@@ -100,7 +112,25 @@ export async function buildInputMessages({
 
   const messages: MessageRow[] = [
     { role: "system", content: systemPrompt },
-    ...(recent ?? []).reverse(),
+    ...((recent ?? []) as unknown as TimelineRow[]).reverse().map(
+      (row: TimelineRow): MessageRow => ({
+        role: row.role,
+        content: row.content,
+        ...(row.type === "file"
+          ? {
+            file_id: row.file_id,
+          }
+          : {}),
+        ...(row.type === "tool-call"
+          ? {
+            tool_name: row.tool_name ?? null,
+            tool_status: row.tool_status ?? null,
+            tool_result: row.tool_result ?? null,
+            tool_error: row.tool_error ?? null,
+          }
+          : {}),
+      }),
+    ),
   ];
 
   return messages;

@@ -10,6 +10,7 @@ import { embedText } from "../_shared/embeddings.ts";
 import { updateTaskAfterRun } from "../_shared/tasks.ts";
 import { createChatBot } from "../_shared/bot.ts";
 import { runAgent } from "../_shared/agent.ts";
+import { processFileById } from "../_shared/files.ts";
 import type { Json, Tables } from "../_shared/database.types.ts";
 type SessionRow = Tables<"sessions">;
 
@@ -191,6 +192,7 @@ type JobType =
   | "embed_memory"
   | "embed_message"
   | "embed_file"
+  | "process_file"
   | "trigger";
 
 const EMBED_CONFIG: Partial<Record<JobType, EmbedConfig>> = {
@@ -243,6 +245,16 @@ async function processEmbed(
   logger.info("msg.embed.done", { msgId, type: jobType, id });
 }
 
+async function processFile(msgId: string, payload: Record<string, Json>) {
+  const fileId = payload.file_id;
+  if (typeof fileId !== "string" || !fileId.trim()) {
+    throw new Error("Invalid process_file payload: missing file_id");
+  }
+  logger.info("msg.process_file.start", { msgId, fileId });
+  await processFileById(fileId);
+  logger.info("msg.process_file.done", { msgId, fileId });
+}
+
 function parsePayload(message: Json): Record<string, Json> {
   if (typeof message !== "object" || message === null || Array.isArray(message)) {
     throw new Error("Invalid queue message: expected object payload");
@@ -258,6 +270,7 @@ async function processMessage(msgId: string, message: Json) {
     type !== "embed_memory" &&
     type !== "embed_message" &&
     type !== "embed_file" &&
+    type !== "process_file" &&
     type !== "trigger"
   ) {
     throw new Error(`Unknown job type: ${type}`);
@@ -265,6 +278,7 @@ async function processMessage(msgId: string, message: Json) {
 
   const jobType = type as JobType;
   if (jobType === "run_task") return await processRunTask(msgId, payload);
+  if (jobType === "process_file") return await processFile(msgId, payload);
   const embedConfig = EMBED_CONFIG[jobType];
   if (embedConfig) return await processEmbed(msgId, jobType, payload, embedConfig);
   if (jobType === "trigger") return processTrigger(payload);

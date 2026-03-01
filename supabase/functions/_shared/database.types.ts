@@ -17,10 +17,14 @@ export type Database = {
           embedding: string | null
           fts: unknown
           id: string
+          last_error: string | null
           metadata: Json
           mime_type: string | null
           name: string
           object_path: string
+          page_count: number | null
+          processed_at: string | null
+          processing_status: Database["public"]["Enums"]["enum_file_processing_status"]
           size_bytes: number | null
           updated_at: string
         }
@@ -31,10 +35,14 @@ export type Database = {
           embedding?: string | null
           fts?: unknown
           id?: string
+          last_error?: string | null
           metadata?: Json
           mime_type?: string | null
           name: string
           object_path: string
+          page_count?: number | null
+          processed_at?: string | null
+          processing_status?: Database["public"]["Enums"]["enum_file_processing_status"]
           size_bytes?: number | null
           updated_at?: string
         }
@@ -45,10 +53,14 @@ export type Database = {
           embedding?: string | null
           fts?: unknown
           id?: string
+          last_error?: string | null
           metadata?: Json
           mime_type?: string | null
           name?: string
           object_path?: string
+          page_count?: number | null
+          processed_at?: string | null
+          processing_status?: Database["public"]["Enums"]["enum_file_processing_status"]
           size_bytes?: number | null
           updated_at?: string
         }
@@ -233,11 +245,13 @@ export type Database = {
       }
       tasks: {
         Row: {
+          completed_at: string | null
           created_at: string
           cron_expr: string | null
           description: string | null
           enabled_at: string | null
           id: number
+          include_session_history: boolean
           last_enqueued_queue_msg_id: string | null
           last_error: string | null
           last_processed_queue_msg_id: string | null
@@ -251,16 +265,17 @@ export type Database = {
             | Database["public"]["Enums"]["enum_schedule_type"]
             | null
           session_id: string | null
-          task_type: Database["public"]["Enums"]["enum_task_type"]
           timezone: string
           updated_at: string
         }
         Insert: {
+          completed_at?: string | null
           created_at?: string
           cron_expr?: string | null
           description?: string | null
           enabled_at?: string | null
           id?: never
+          include_session_history?: boolean
           last_enqueued_queue_msg_id?: string | null
           last_error?: string | null
           last_processed_queue_msg_id?: string | null
@@ -274,16 +289,17 @@ export type Database = {
             | Database["public"]["Enums"]["enum_schedule_type"]
             | null
           session_id?: string | null
-          task_type?: Database["public"]["Enums"]["enum_task_type"]
           timezone?: string
           updated_at?: string
         }
         Update: {
+          completed_at?: string | null
           created_at?: string
           cron_expr?: string | null
           description?: string | null
           enabled_at?: string | null
           id?: never
+          include_session_history?: boolean
           last_enqueued_queue_msg_id?: string | null
           last_error?: string | null
           last_processed_queue_msg_id?: string | null
@@ -297,7 +313,6 @@ export type Database = {
             | Database["public"]["Enums"]["enum_schedule_type"]
             | null
           session_id?: string | null
-          task_type?: Database["public"]["Enums"]["enum_task_type"]
           timezone?: string
           updated_at?: string
         }
@@ -352,12 +367,17 @@ export type Database = {
         | "mobile"
         | "desktop"
         | "api"
+      enum_file_processing_status:
+        | "pending"
+        | "processing"
+        | "succeeded"
+        | "failed"
+        | "skipped"
       enum_memory_type: "summary" | "pinned_fact" | "note"
       enum_message_role: "assistant" | "user" | "system"
       enum_message_tool_status: "started" | "succeeded" | "failed"
       enum_message_type: "text" | "tool-call" | "file"
       enum_schedule_type: "once" | "recurring"
-      enum_task_type: "reminder" | "agent_turn" | "backlog"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -499,12 +519,18 @@ export const Constants = {
         "desktop",
         "api",
       ],
+      enum_file_processing_status: [
+        "pending",
+        "processing",
+        "succeeded",
+        "failed",
+        "skipped",
+      ],
       enum_memory_type: ["summary", "pinned_fact", "note"],
       enum_message_role: ["assistant", "user", "system"],
       enum_message_tool_status: ["started", "succeeded", "failed"],
       enum_message_type: ["text", "tool-call", "file"],
       enum_schedule_type: ["once", "recurring"],
-      enum_task_type: ["reminder", "agent_turn", "backlog"],
     },
   },
 } as const

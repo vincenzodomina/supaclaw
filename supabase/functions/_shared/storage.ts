@@ -1,5 +1,6 @@
 import { createServiceClient } from "./supabase.ts";
 import { logger } from "./logger.ts";
+import type { Tables } from "./database.types.ts";
 
 const supabase = createServiceClient();
 
@@ -43,10 +44,12 @@ function isStorageNotFound(error: unknown): boolean {
   return statusCode === 404 || status === 404 || message.includes("not found");
 }
 
-export async function downloadTextFromWorkspace(
+export type DownloadedFile = Tables<"files"> & { data: Uint8Array };
+
+export async function downloadFile(
   objectPath: string,
   options?: { optional?: boolean },
-): Promise<string | null> {
+): Promise<DownloadedFile | null> {
   const bucket = getWorkspaceBucketName();
   const safePath = sanitizeObjectPath(objectPath);
   const { data, error } = await supabase.storage.from(bucket).download(
@@ -77,7 +80,30 @@ export async function downloadTextFromWorkspace(
     });
     return null;
   }
-  return await data.text();
+
+  const bytes = new Uint8Array(await data.arrayBuffer());
+
+  const { data: row, error: rowErr } = await supabase
+    .from("files")
+    .select("*")
+    .eq("bucket", bucket)
+    .eq("object_path", safePath)
+    .maybeSingle();
+
+  if (rowErr) {
+    if (options?.optional) return null;
+    throw new Error(`Failed to load file record: ${rowErr.message}`);
+  }
+  if (!row) {
+    if (options?.optional) return null;
+    throw new Error(`File record not found for: ${safePath}`);
+  }
+
+  return { ...(row as Tables<"files">), data: bytes };
+}
+
+export function decodeUtf8(file: DownloadedFile): string {
+  return new TextDecoder().decode(file.data);
 }
 
 export async function listWorkspaceObjects(
@@ -108,6 +134,52 @@ export async function listWorkspaceObjects(
   }
 
   return { bucket, prefix, objects: data ?? [] };
+}
+
+export async function removeWorkspaceObjects(
+  objectPaths: string[],
+): Promise<{ removed: number }> {
+  const bucket = getWorkspaceBucketName();
+  const safe = objectPaths
+    .map((p) => sanitizeObjectPath(p))
+    .filter(Boolean);
+  if (safe.length === 0) return { removed: 0 };
+
+  const { error } = await supabase.storage.from(bucket).remove(safe);
+  if (error) throw new Error(`Storage remove failed: ${error.message}`);
+  return { removed: safe.length };
+}
+
+/**
+ * Delete all objects directly under a prefix (non-recursive) in batches.
+ * Intended for deleting derived artifacts like `uploads/foo.pdf/page_0001.png`.
+ */
+export async function cleanupWorkspacePrefix(
+  objectPathPrefix: string,
+  options?: { batchSize?: number },
+): Promise<{ prefix: string; removed: number }> {
+  const batchSize = Math.max(1, Math.min(options?.batchSize ?? 100, 1000));
+  const prefix = sanitizeObjectPrefix(objectPathPrefix);
+  let removed = 0;
+  let offset = 0;
+
+  while (true) {
+    const { objects } = await listWorkspaceObjects(prefix, {
+      limit: batchSize,
+      offset,
+    });
+    if (!objects.length) break;
+
+    const paths = objects.map((o) => (prefix ? `${prefix}/${o.name}` : o.name));
+    await removeWorkspaceObjects(paths);
+    removed += paths.length;
+
+    // Keep the same offset because we removed the previous page.
+    // Supabase Storage list uses offset into current listing.
+    offset = 0;
+  }
+
+  return { prefix, removed };
 }
 
 /** Upload string or binary content to storage and upsert a file DB record. */

@@ -1,5 +1,6 @@
 import {
-  downloadTextFromWorkspace,
+  decodeUtf8,
+  downloadFile,
   listWorkspaceObjects,
   uploadFile,
 } from "./storage.ts";
@@ -389,16 +390,18 @@ export function renderAvailableSkillsXml(
 export async function loadSkillFile(slug: string): Promise<string> {
   const safeSlug = assertValidSkillSlug(slug);
   const objectPath = `${SKILLS_PREFIX}/${safeSlug}/${SKILL_ENTRYPOINT}`;
-  const content = await downloadTextFromWorkspace(objectPath);
-  if (content === null) throw new Error(`Skill not found: ${safeSlug}`);
+  const file = await downloadFile(objectPath, { optional: true });
+  if (file === null) throw new Error(`Skill not found: ${safeSlug}`);
+  const content = decodeUtf8(file);
   return enforceMaxTextBytes(`Skill ${safeSlug}/${SKILL_ENTRYPOINT}`, content);
 }
 
 async function loadSkillMetadata(slug: string): Promise<SkillMetadata | null> {
   const safeSlug = assertValidSkillSlug(slug);
   const objectPath = `${SKILLS_PREFIX}/${safeSlug}/${SKILL_ENTRYPOINT}`;
-  const raw = await downloadTextFromWorkspace(objectPath);
-  if (raw === null) return null;
+  const file = await downloadFile(objectPath, { optional: true });
+  if (file === null) return null;
+  const raw = decodeUtf8(file);
 
   const fm = extractYamlFrontmatter(raw);
   if (!fm) return null;
@@ -522,10 +525,11 @@ export async function readSkillResource(
   const safeSlug = assertValidSkillSlug(slug);
   const safePath = sanitizeSkillResourcePath(resourcePath);
   const objectPath = `${SKILLS_PREFIX}/${safeSlug}/${safePath}`;
-  const content = await downloadTextFromWorkspace(objectPath);
-  if (content === null) {
+  const file = await downloadFile(objectPath, { optional: true });
+  if (file === null) {
     throw new Error(`Skill resource not found: ${safeSlug}/${safePath}`);
   }
+  const content = decodeUtf8(file);
   return enforceMaxTextBytes(`Skill resource ${safeSlug}/${safePath}`, content);
 }
 
@@ -1160,7 +1164,7 @@ export async function installSkillFromContent(params: {
 
   const slug = meta.slug;
   const dest = `.agents/skills/${slug}/SKILL.md`;
-  const exists = await downloadTextFromWorkspace(dest, { optional: true });
+  const exists = await downloadFile(dest, { optional: true });
   if (exists !== null && params.overwrite !== true) {
     return installError(
       "skill_exists",
@@ -1283,7 +1287,7 @@ export async function installSkillFromUrl(params: {
   const slug = meta.slug;
   const destRoot = `.agents/skills/${slug}`;
   const destSkill = `${destRoot}/SKILL.md`;
-  const exists = await downloadTextFromWorkspace(destSkill, { optional: true });
+  const exists = await downloadFile(destSkill, { optional: true });
   if (exists !== null && params.overwrite !== true) {
     return installError(
       "skill_exists",

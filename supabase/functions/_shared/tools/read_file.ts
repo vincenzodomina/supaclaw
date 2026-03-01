@@ -1,5 +1,5 @@
 import { jsonSchema, tool } from "ai";
-import { downloadTextFromWorkspace } from "../storage.ts";
+import { decodeUtf8, downloadFile } from "../storage.ts";
 
 export const readFileTool = tool({
   description:
@@ -16,7 +16,8 @@ export const readFileTool = tool({
     additionalProperties: false,
   }),
   execute: async ({ path }) => {
-    const content = await downloadTextFromWorkspace(path, { optional: true });
-    return { path, exists: content !== null, content };
+    const file = await downloadFile(path, { optional: true });
+    const content = file ? decodeUtf8(file) : null;
+    return { path, exists: file !== null, content };
   },
 });
