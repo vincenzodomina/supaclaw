@@ -1,50 +1,43 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Seed workspace/.agents files into Supabase Storage.
+# Download workspace/.agents files from Supabase Storage and overwrite locally.
 #
-# Important: this script uses the Storage HTTP API + service role key via curl as a temporary workaround. Revisit later.
-# Reason: `supabase storage` may require access token even with `--local`.
-#
-# Target approach:
-#   supabase --experimental storage ls/rm/cp ...
-#
-# What this script does (step-by-step):
-# 1) Resolves inputs from flags and/or env file
-# 2) Verifies dependencies (`curl`, `python3`) and source directory existence.
-# 3) Lists current objects under `<bucket>/.agents/` via Storage HTTP API.
-# 4) If objects exist, asks whether to remove them first.
-# 5) Uploads all files from source dir recursively to `<bucket>/.agents/...`.
+# This mirrors scripts/seed-agents-storage.sh, but in reverse.
 #
 # Usage:
 #   # Local default usage
-#   bash ./scripts/seed-agents-storage.sh --env-file supabase/.env.local --source-dir workspace/.agents
+#   bash ./scripts/download-agents-storage.sh --env-file supabase/.env.local --dest-dir workspace/.agents
 #
 #   # Cloud/linked project usage
-#   bash ./scripts/seed-agents-storage.sh --env-file supabase/.env --source-dir workspace/.agents
+#   bash ./scripts/download-agents-storage.sh --env-file supabase/.env --dest-dir workspace/.agents
 #
 # Optional flags:
 #   --workspace-bucket <name>  Override bucket (default from env or "workspace")
 #   --api-url <url>            Override API URL (default from env or localhost)
+#   --clean                    Remove dest dir contents before download (mirror storage exactly)
+#   --yes                      Do not prompt for confirmation (only affects --clean)
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 ENV_FILE="${REPO_ROOT}/supabase/.env.local"
-AGENTS_SRC="${REPO_ROOT}/workspace/.agents"
+AGENTS_DEST="${REPO_ROOT}/workspace/.agents"
 WORKSPACE_BUCKET=""
 SUPABASE_API_URL=""
+CLEAN_DEST="false"
+ASSUME_YES="false"
 
 log() {
-  printf "[seed-agents] %s\n" "$1"
+  printf "[download-agents] %s\n" "$1"
 }
 
 warn() {
-  printf "[seed-agents][warn] %s\n" "$1"
+  printf "[download-agents][warn] %s\n" "$1"
 }
 
 die() {
-  printf "[seed-agents][error] %s\n" "$1" >&2
+  printf "[download-agents][error] %s\n" "$1" >&2
   exit 1
 }
 
@@ -100,8 +93,8 @@ while [[ $# -gt 0 ]]; do
       ENV_FILE="$2"
       shift 2
       ;;
-    --source-dir)
-      AGENTS_SRC="$2"
+    --dest-dir)
+      AGENTS_DEST="$2"
       shift 2
       ;;
     --workspace-bucket)
@@ -112,6 +105,14 @@ while [[ $# -gt 0 ]]; do
       SUPABASE_API_URL="$2"
       shift 2
       ;;
+    --clean)
+      CLEAN_DEST="true"
+      shift 1
+      ;;
+    --yes)
+      ASSUME_YES="true"
+      shift 1
+      ;;
     *)
       die "Unknown argument: $1"
       ;;
@@ -121,9 +122,11 @@ done
 command -v curl >/dev/null 2>&1 || die "curl is required."
 command -v python3 >/dev/null 2>&1 || die "python3 is required."
 
-if [[ ! -d "${AGENTS_SRC}" ]]; then
-  warn "No local .agents directory found at ${AGENTS_SRC}; skipping seed."
-  exit 0
+if [[ "${ENV_FILE}" != /* ]]; then
+  ENV_FILE="${REPO_ROOT}/${ENV_FILE}"
+fi
+if [[ "${AGENTS_DEST}" != /* ]]; then
+  AGENTS_DEST="${REPO_ROOT}/${AGENTS_DEST}"
 fi
 
 if [[ -z "${WORKSPACE_BUCKET}" ]]; then
@@ -152,44 +155,46 @@ list_response="$(curl -fsS -X POST \
   -d '{"prefix":".agents/","limit":1000,"offset":0,"sortBy":{"column":"name","order":"asc"}}' \
   || true)"
 
-existing_paths="$(printf "%s" "${list_response}" | python3 -c $'import json, sys\nraw = sys.stdin.read().strip()\nif not raw:\n    raise SystemExit(0)\ntry:\n    data = json.loads(raw)\nexcept Exception:\n    raise SystemExit(0)\nif not isinstance(data, list):\n    raise SystemExit(0)\nfor row in data:\n    if not isinstance(row, dict):\n        continue\n    name = row.get(\"name\")\n    if isinstance(name, str) and name:\n        # List may return relative-to-prefix or full keys.\n        if name.startswith(\".agents/\"):\n            print(name)\n        else:\n            print(f\".agents/{name}\")\n')"
+# Produces output paths like: ".agents/some/file.txt"
+object_paths="$(printf "%s" "${list_response}" | python3 -c $'import json, sys\nraw = sys.stdin.read().strip()\nif not raw:\n    raise SystemExit(0)\ntry:\n    data = json.loads(raw)\nexcept Exception:\n    raise SystemExit(0)\nif not isinstance(data, list):\n    raise SystemExit(0)\nfor row in data:\n    if not isinstance(row, dict):\n        continue\n    name = row.get(\"name\")\n    if isinstance(name, str) and name:\n        # Supabase Storage list may return names either:\n        # - relative to the provided prefix (e.g. \"FOO.md\"), or\n        # - full object keys (e.g. \".agents/FOO.md\").\n        if name.startswith(\".agents/\"):\n            print(name)\n        else:\n            print(f\".agents/{name}\")\n')"
 
-if [[ -n "${existing_paths//[[:space:]]/}" ]]; then
-  warn "Existing .agents files found in bucket '${WORKSPACE_BUCKET}'."
-  if ask_yes_no "Remove existing .agents files before seeding from source?" "n"; then
-    while IFS= read -r object_path; do
-      [[ -n "${object_path}" ]] || continue
-      encoded_path="$(urlencode_path "${object_path}")"
-      curl -fsS -X DELETE \
-        "${SUPABASE_API_URL}/storage/v1/object/${WORKSPACE_BUCKET}/${encoded_path}" \
-        -H "apikey: ${SERVICE_ROLE_KEY}" \
-        -H "Authorization: Bearer ${SERVICE_ROLE_KEY}" >/dev/null
-    done <<< "${existing_paths}"
-  else
-    warn "Keeping existing .agents files. Skipping seed to avoid overwrite."
-    exit 0
-  fi
+if [[ -z "${object_paths//[[:space:]]/}" ]]; then
+  warn "No .agents objects found in bucket '${WORKSPACE_BUCKET}'. Nothing to download."
+  exit 0
 fi
 
-uploaded_count=0
-while IFS= read -r -d '' file_path; do
-  [[ -f "${file_path}" ]] || continue
-  rel_path="${file_path#${AGENTS_SRC}/}"
-  object_path=".agents/${rel_path}"
-  encoded_path="$(urlencode_path "${object_path}")"
-  content_type="text/plain; charset=utf-8"
-  if [[ "${file_path}" == *.md ]]; then
-    content_type="text/markdown; charset=utf-8"
+if [[ "${CLEAN_DEST}" == "true" ]]; then
+  if [[ "${ASSUME_YES}" != "true" ]]; then
+    if ! ask_yes_no "This will delete local contents of ${AGENTS_DEST} before downloading. Continue?" "n"; then
+      warn "Aborted."
+      exit 1
+    fi
   fi
+  rm -rf "${AGENTS_DEST}"
+fi
 
-  curl -fsS -X POST \
+mkdir -p "${AGENTS_DEST}"
+
+downloaded_count=0
+while IFS= read -r object_path; do
+  [[ -n "${object_path}" ]] || continue
+  rel_path="${object_path#.agents/}"
+  dest_path="${AGENTS_DEST}/${rel_path}"
+  dest_dir="$(dirname "${dest_path}")"
+  mkdir -p "${dest_dir}"
+
+  encoded_path="$(urlencode_path "${object_path}")"
+  tmp_path="${dest_path}.tmp.$$"
+
+  # Note: GET /storage/v1/object/<bucket>/<path> returns the raw object body.
+  curl -fsS \
     "${SUPABASE_API_URL}/storage/v1/object/${WORKSPACE_BUCKET}/${encoded_path}" \
     -H "apikey: ${SERVICE_ROLE_KEY}" \
     -H "Authorization: Bearer ${SERVICE_ROLE_KEY}" \
-    -H "x-upsert: true" \
-    -H "Content-Type: ${content_type}" \
-    --data-binary "@${file_path}" >/dev/null
-  uploaded_count=$((uploaded_count + 1))
-done < <(find "${AGENTS_SRC}" -type f -print0)
+    -o "${tmp_path}"
 
-log "Seeded ${uploaded_count} file(s) from ${AGENTS_SRC} into ${WORKSPACE_BUCKET}/.agents."
+  mv -f "${tmp_path}" "${dest_path}"
+  downloaded_count=$((downloaded_count + 1))
+done <<< "${object_paths}"
+
+log "Downloaded ${downloaded_count} file(s) from ${WORKSPACE_BUCKET}/.agents into ${AGENTS_DEST}."
