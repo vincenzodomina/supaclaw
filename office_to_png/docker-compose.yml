@@ -1,0 +1,10 @@
+services:
+  office_to_png:
+    build:
+      context: .
+    volumes:
+      - ./data:/data
+    # Run like:
+    #   docker compose run --rm office_to_png --input /data/in.docx --outdir /data/out --dpi 200
+    entrypoint: ["/app/office_to_png.py"]
+

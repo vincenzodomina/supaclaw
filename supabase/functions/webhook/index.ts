@@ -180,7 +180,10 @@ async function handleMessage(
   if (message.attachments?.length) {
     const attachmentDescriptions: string[] = [];
     const processingEnqueues: Array<Promise<unknown>> = [];
-    const sessionId = await ensureSessionId({ channel, channelChatId: thread.id });
+    const sessionId = await ensureSessionId({
+      channel,
+      channelChatId: thread.id,
+    });
 
     for (const [index, attachment] of message.attachments.entries()) {
       const att = attachment as Attachment;
@@ -211,8 +214,9 @@ async function handleMessage(
       // Persist attachment reference as its own timeline row (one per file).
       // This makes every attachment visible across subsequent turns (not just the first).
       const now = new Date().toISOString();
-      {
-        const { error } = await supabase.from("messages").insert({
+      let insertedNewAttachmentMessage = false;
+      const { error: attachmentInsertError } = await supabase.from("messages")
+        .insert({
           session_id: sessionId,
           role: "user",
           type: "file",
@@ -224,14 +228,21 @@ async function handleMessage(
           channel_from_user_id: message.author.userId,
           updated_at: now,
         });
-        if (error && error.code !== "23505") {
-          logger.warn("webhook.attachment_message.insert_failed", { error });
+      if (attachmentInsertError) {
+        if (attachmentInsertError.code !== "23505") {
+          logger.warn("webhook.attachment_message.insert_failed", {
+            error: attachmentInsertError,
+          });
         }
+      } else {
+        insertedNewAttachmentMessage = true;
       }
 
-      // Set a helpful one-liner immediately; pipeline will overwrite on success.
-      {
-        const { error } = await supabase.from("files").update({
+      // Dedupe queue jobs: on webhook retries, the attachment message insert hits 23505.
+      // Only enqueue processing for a newly inserted attachment timeline row.
+      if (insertedNewAttachmentMessage) {
+        // Set a helpful one-liner immediately; pipeline will overwrite on success.
+        const { error: fileUpdateError } = await supabase.from("files").update({
           content: `${att.name ?? "file"}${
             att.mimeType ? ` (${att.mimeType})` : ""
           } uploaded → ${objectPath} (text: ${objectPath}/full.txt)`,
@@ -241,23 +252,23 @@ async function handleMessage(
           last_error: null,
           updated_at: now,
         }).eq("id", file.id);
-        if (error) {
+        if (fileUpdateError) {
           logger.warn("webhook.file_row.update_failed", {
             fileId: file.id,
-            error,
+            error: fileUpdateError,
           });
         }
-      }
 
-      processingEnqueues.push(
-        enqueueFileProcessing(file.id).catch((error) => {
-          logger.error("webhook.file_processing.enqueue_failed", {
-            fileId: file.id,
-            objectPath,
-            error,
-          });
-        }),
-      );
+        processingEnqueues.push(
+          enqueueFileProcessing(file.id).catch((error) => {
+            logger.error("webhook.file_processing.enqueue_failed", {
+              fileId: file.id,
+              objectPath,
+              error,
+            });
+          }),
+        );
+      }
     }
 
     attachmentCount = attachmentDescriptions.length;
@@ -403,11 +414,10 @@ async function handleTrigger(req: Request) {
     }
     : payload;
 
-  const msg =
-    typeof enrichedPayload === "object" && enrichedPayload !== null &&
+  const msg = typeof enrichedPayload === "object" && enrichedPayload !== null &&
       !Array.isArray(enrichedPayload)
-      ? { ...(enrichedPayload as Record<string, unknown>), type }
-      : { type, payload: enrichedPayload };
+    ? { ...(enrichedPayload as Record<string, unknown>), type }
+    : { type, payload: enrichedPayload };
 
   const { data, error } = await supabase.rpc("queue_send", {
     p_msg: msg,

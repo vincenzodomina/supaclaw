@@ -146,11 +146,21 @@ export async function processFileById(fileId: string): Promise<void> {
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     logger.error("file_processing.failed", { fileId, error: msg });
-    await supabase.from("files").update({
+    const { error: updateErr } = await supabase.from("files").update({
       processing_status: "failed",
       processed_at: new Date().toISOString(),
       last_error: msg,
       updated_at: new Date().toISOString(),
     }).eq("id", fileId);
+    if (updateErr) {
+      logger.warn("file_processing.failed_db_update_failed", {
+        fileId,
+        error: updateErr,
+      });
+    }
+
+    // Important: rethrow so the queue job is not deleted and can retry.
+    // The worker owns retry semantics; this function owns DB state updates.
+    throw error instanceof Error ? error : new Error(msg);
   }
 }
