@@ -67,8 +67,9 @@ export async function processFileById(fileId: string): Promise<void> {
 
     if (isTextLike(mimeType)) return;
 
-    const downloaded = await downloadFile(objectPath);
-    if (!downloaded?.data?.byteLength) {
+    const isImage = (mimeType ?? "").toLowerCase().startsWith("image/");
+    const downloaded = isImage ? await downloadFile(objectPath) : null;
+    if (isImage && !downloaded?.data?.byteLength) {
       throw new Error(`Original file bytes missing in storage: ${objectPath}`);
     }
 
@@ -86,7 +87,7 @@ export async function processFileById(fileId: string): Promise<void> {
         name,
         mimeType,
       },
-      bytes: downloaded.data,
+      bytes: downloaded?.data,
     });
 
     let assembled = "";

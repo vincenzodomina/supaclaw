@@ -7,26 +7,3 @@ services:
     # Run like:
     #   docker compose run --rm office_to_png --input /data/in.docx --outdir /data/out --dpi 200
     entrypoint: ["office-to-png"]
-
-  office_to_png_http:
-    build:
-      context: .
-    environment:
-      # Required for the HTTP wrapper which uses Supabase Storage APIs as the passed user JWT.
-      # - SUPABASE_URL: e.g. https://<project-ref>.supabase.co
-      # - SUPABASE_ANON_KEY: public anon key (not a secret)
-      - SUPABASE_URL=${SUPABASE_URL}
-      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
-    ports:
-      # Host-only binding for safe local testing (not exposed to LAN/public).
-      - "127.0.0.1:8000:8000"
-    entrypoint:
-      [
-        "uvicorn",
-        "office_to_png.http_api:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "8000",
-      ]
-

@@ -8,15 +8,6 @@ dependencies = [
   "Pillow==12.1.1",
 ]
 
-[project.optional-dependencies]
-# Optional: slim HTTP wrapper that downloads/uploads via Supabase Storage APIs
-# using a passed user JWT (user-scoped policies).
-server = [
-  "fastapi==0.115.11",
-  "uvicorn[standard]==0.34.0",
-  "supabase==2.18.1",
-]
-
 [project.scripts]
 office-to-png = "office_to_png:cli"
 office_to_png = "office_to_png:cli"
