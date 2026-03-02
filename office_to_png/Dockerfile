@@ -18,5 +18,5 @@ COPY pyproject.toml /app/pyproject.toml
 COPY office_to_png /app/office_to_png
 RUN pip install --no-cache-dir /app
 
-ENTRYPOINT ["office_to_png"]
+ENTRYPOINT ["office-to-png"]
 

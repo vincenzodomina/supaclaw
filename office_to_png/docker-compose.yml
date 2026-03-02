@@ -6,5 +6,5 @@ services:
       - ./data:/data
     # Run like:
     #   docker compose run --rm office_to_png --input /data/in.docx --outdir /data/out --dpi 200
-    entrypoint: ["office_to_png"]
+    entrypoint: ["office-to-png"]
 

@@ -1,5 +1,5 @@
 [project]
-name = "office_to_png"
+name = "office-to-png"
 version = "0.1.0"
 description = "Convert Office docs and PDFs to per-page PNGs (LibreOffice + PDFium)."
 requires-python = ">=3.10"
@@ -9,7 +9,8 @@ dependencies = [
 ]
 
 [project.scripts]
-office_to_png = "office_to_png.cli:cli"
+office-to-png = "office_to_png:cli"
+office_to_png = "office_to_png:cli"
 
 [build-system]
 requires = ["setuptools>=68"]

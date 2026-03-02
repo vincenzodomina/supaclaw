@@ -1,4 +1,4 @@
-# Third-Party Notices (office_to_png)
+# Third-Party Notices (office-to-png)
 
 The Python source code in this directory is licensed under the MIT License (see `LICENSE`).
 
