@@ -85,7 +85,13 @@ def main(argv: list[str] | None = None) -> int:
         "--input", required=True, help="Path to input file (docx/pptx/xlsx/pdf/...)."
     )
     ap.add_argument(
-        "--outdir", required=True, help="Output directory for page_XXXX.png files."
+        "--outdir",
+        required=False,
+        default=None,
+        help=(
+            "Output directory for page_XXXX.png files. "
+            "Default: create a sibling folder next to the input named after the input file (e.g. ./foo.docx -> ./foo/)."
+        ),
     )
     ap.add_argument("--dpi", type=int, default=200, help="Render DPI (default: 200).")
     ap.add_argument(
@@ -97,9 +103,13 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     input_path = Path(args.input).expanduser().resolve()
-    outdir = Path(args.outdir).expanduser().resolve()
     if not input_path.exists():
         raise SystemExit(f"input not found: {input_path}")
+
+    if args.outdir:
+        outdir = Path(args.outdir).expanduser().resolve()
+    else:
+        outdir = (input_path.parent / input_path.stem).resolve()
 
     tmp_pdf: Path | None = None
     try:
