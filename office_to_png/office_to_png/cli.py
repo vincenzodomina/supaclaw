@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import argparse
 import io
 import shutil
@@ -39,7 +38,6 @@ def office_to_pdf(input_path: Path, *, timeout_s: int = 120) -> Path:
         shutil.rmtree(tmpdir, ignore_errors=True)
         raise
 
-    # LibreOffice generally outputs "<stem>.pdf", but be defensive.
     expected = tmpdir / f"{input_path.stem}.pdf"
     if expected.exists():
         return expected
@@ -63,7 +61,8 @@ def pdf_to_png_pages(pdf_path: Path, *, outdir: Path, dpi: int) -> int:
         for i in range(n_pages):
             page = doc[i]
             pil: Image.Image = page.render(scale=scale).to_pil()
-            # Ensure deterministic RGB PNG output (OCR-friendly).
+
+            # Deterministic, OCR-friendly PNGs (no alpha).
             if pil.mode not in ("RGB", "RGBA"):
                 pil = pil.convert("RGB")
             elif pil.mode == "RGBA":
@@ -73,29 +72,20 @@ def pdf_to_png_pages(pdf_path: Path, *, outdir: Path, dpi: int) -> int:
 
             buf = io.BytesIO()
             pil.save(buf, format="PNG", optimize=False)
-            png_bytes = buf.getvalue()
-            (outdir / f"page_{i+1:04d}.png").write_bytes(png_bytes)
+            (outdir / f"page_{i+1:04d}.png").write_bytes(buf.getvalue())
+
         return n_pages
     finally:
         doc.close()
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Convert Office/PDF to per-page PNGs.")
-    ap.add_argument(
-        "--input", required=True, help="Path to input file (docx/pptx/xlsx/pdf/...)."
-    )
-    ap.add_argument(
-        "--outdir", required=True, help="Output directory for page_XXXX.png files."
-    )
+    ap.add_argument("--input", required=True, help="Path to input file (docx/pptx/xlsx/pdf/...).")
+    ap.add_argument("--outdir", required=True, help="Output directory for page_XXXX.png files.")
     ap.add_argument("--dpi", type=int, default=200, help="Render DPI (default: 200).")
-    ap.add_argument(
-        "--timeout-s",
-        type=int,
-        default=120,
-        help="LibreOffice convert timeout seconds.",
-    )
-    args = ap.parse_args()
+    ap.add_argument("--timeout-s", type=int, default=120, help="LibreOffice convert timeout seconds.")
+    args = ap.parse_args(argv)
 
     input_path = Path(args.input).expanduser().resolve()
     outdir = Path(args.outdir).expanduser().resolve()
@@ -115,11 +105,9 @@ def main() -> int:
         return 0
     finally:
         if tmp_pdf is not None:
-            try:
-                shutil.rmtree(tmp_pdf.parent)
-            except Exception:
-                pass
+            shutil.rmtree(tmp_pdf.parent, ignore_errors=True)
 
 
-if __name__ == "__main__":
+def cli() -> None:
     raise SystemExit(main())
+

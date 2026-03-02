@@ -14,11 +14,9 @@ RUN apt-get update && \
     # rebuild fontconfig cache
 
 WORKDIR /app
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+COPY pyproject.toml /app/pyproject.toml
+COPY office_to_png /app/office_to_png
+RUN pip install --no-cache-dir /app
 
-COPY office_to_png.py /app/office_to_png.py
-RUN chmod +x /app/office_to_png.py
-
-ENTRYPOINT ["/app/office_to_png.py"]
+ENTRYPOINT ["office_to_png"]
 
