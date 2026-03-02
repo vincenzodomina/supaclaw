@@ -16,7 +16,7 @@ RUN apt-get update && \
 WORKDIR /app
 COPY pyproject.toml /app/pyproject.toml
 COPY office_to_png /app/office_to_png
-RUN pip install --no-cache-dir /app
+RUN pip install --no-cache-dir "/app[server]"
 
 ENTRYPOINT ["office-to-png"]
 
