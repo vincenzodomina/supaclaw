@@ -175,7 +175,7 @@ async function handleMessage(
   }
 
   let content = (message.text ?? "").trim();
-  let fileId: string | undefined;
+  let attachmentCount = 0;
 
   if (message.attachments?.length) {
     const attachmentDescriptions: string[] = [];
@@ -260,17 +260,20 @@ async function handleMessage(
       );
     }
 
-    if (attachmentDescriptions.length) {
-      const attachmentsText = attachmentDescriptions.join("\n");
-      content = content ? `${attachmentsText}\n${content}` : attachmentsText;
-    }
+    attachmentCount = attachmentDescriptions.length;
 
     if (processingEnqueues.length) {
       EdgeRuntime.waitUntil(Promise.all(processingEnqueues));
     }
   }
 
-  if (!content && !fileId) return;
+  if (!content && attachmentCount > 0) {
+    content = attachmentCount === 1
+      ? "Uploaded a file."
+      : `Uploaded ${attachmentCount} files.`;
+  }
+
+  if (!content) return;
 
   try {
     const result = await runAgent({
