@@ -83,16 +83,16 @@ For security-minded folks, see [SECURITY.md](SECURITY.md).
 ### Done (v0.1.0)
 - ✅ Core architecture
 - ✅ Supabase integration (schema + jobs)
-- ✅ Telegram webhook + worker
+- ✅ Multi channel support (Telegram, Slack, Teams, Discord, ..)
 - ✅ Memory tables + hybrid search (FTS + pgvector)
-- ✅ Tools (read/write/list/edit)
+- ✅ File Tools (read/write/list/edit)
+- ✅ Web Tools (web-search/web-fetch)
 - ✅ Skills
 - ✅ Cron tool (reminders, scheduled tasks, recurring jobs)
+- ✅ Bash tool (In Memory Filesystem)
 
-### Missing (v0.2.0)
-- [ ] More channels (Slack, Whatsapp, ..)
-- [ ] More tools (web/search)
-- [ ] Sandbox shell execution
+### Next (v0.2.0)
+- [ ] Bash tool (CLI's)
 - [ ] Self access via Github
 - [ ] Connectors (calendar, email, etc.)
 - [ ] Web chat UI
