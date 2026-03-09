@@ -298,30 +298,19 @@ async function handleMessage(
       },
     });
 
-    const showToolCalls = channel === "telegram" &&
-      getConfigBoolean("channels.telegram.show_tool_calls") === true;
+    const showToolCalls = getConfigBoolean("channels.telegram.show_tool_calls") === true;
 
-    if (channel === "telegram") {
+    if (showToolCalls) {
       const stream = createTextStreamWithToolTelemetry({
         thread,
         fullStream: result.fullStream,
         showToolCalls,
       });
-
-      // Chat SDK fallback streaming posts an initial "..." placeholder on Telegram.
-      // Workaround: delete the streamed message after completion and repost final text
-      // so it appears after any tool telemetry messages.
-      const sent = await thread.post(stream);
-      const finalText = (sent.text ?? "").trim();
-
-      if (showToolCalls && finalText) {
-        await sent.delete().catch(() => {});
-        await thread.post(finalText);
-      }
+      await thread.post(stream);
       return;
     }
 
-    // Other channels: keep native streaming behavior.
+    // Stream final text without tool calls
     await thread.post(result.textStream);
   } catch (err) {
     if (err instanceof DuplicateInboundError) return;
